@@ -189,6 +189,34 @@ dropped into their `runs/` folder:
 and gives the exact commands to run on their side. The organiser's own 210k-step checkpoint loads in
 our compatible environment with identical spaces.
 
+## 6. Train on the FAU TinyGPU cluster
+
+[TinyGPU](https://doc.nhr.fau.de/clusters/tinygpu/) is FAU's Tier3 GPU cluster (RTX 2080 Ti, RTX 3080, V100 and
+A100 nodes, batch jobs up to 24 h). Training is simulator-bound at roughly 75 steps/s, so a single run is not
+much faster than a local GPU; the cluster pays off for the organiser's 1M-step runs and for several seeds or
+settings in parallel. Scripts are in `hpc/`.
+
+```bash
+# 1. on your machine: copy the repo (and the anatomy, so the cluster need not download it)
+rsync -av --exclude .venv --exclude runs --exclude results --exclude Hackathon.zip ./ tinyx.nhr.fau.de:'$WORK'/stroke-nav/
+
+# 2. on the frontend (ssh tinyx.nhr.fau.de): venv under $WORK, CUDA PyTorch 2.14.1, package, anatomy
+cd $WORK/stroke-nav && bash hpc/setup_tinygpu.sh
+
+# 3. submit; everything after the script name goes to scripts/train_sac.py
+sbatch.tinygpu hpc/train_sac.sbatch --total-timesteps 1000000
+sbatch.tinygpu --array=0-3 hpc/train_sac.sbatch --total-timesteps 200000      # 4 seeds, 4 GPUs
+sbatch.tinygpu -p a100 --gres=gpu:a100:1 hpc/train_sac.sbatch                   # other GPU type
+squeue.tinygpu && tail -f slurm-stroke-nav-sac-*.out
+
+# 4. back on your machine: fetch the run folders
+rsync -av tinyx.nhr.fau.de:'$WORK'/stroke-nav/runs/ runs/
+```
+
+For a quick test use an interactive job (limit 4 h): `salloc.tinygpu --gres=gpu:1 --time=01:00:00`, then
+`source $WORK/venvs/stroke-nav/bin/activate` and run `scripts/train_sac.py` directly. Compute nodes have no
+direct internet, so fetch anatomy on the frontend or copy `data/processed/` from your machine.
+
 ## Environment (`stroke_nav.env.vessel_env.VesselNavEnv`)
 
 - **Action** `Box(-1, 1, (4,))`: speeds scaled by `v_max` (default 40 mm/s) and `w_max` (default 180 °/s) per device, at 7.5 Hz.
