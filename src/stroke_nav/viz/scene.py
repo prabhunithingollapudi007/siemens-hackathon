@@ -88,24 +88,48 @@ class Scene:
 
     # ------------------------------------------------------------------ updates
     def update(self, status: str = "", keys_help: str | None = None, show_hud: bool = True) -> None:
+        """Redraw devices, markers and text. Actors are created once and then updated in place,
+        so this stays cheap enough to call every frame of an interactive session."""
         env, sim, pv = self.env, self.env.sim, self.pv
+        cache = self.__dict__.setdefault("_cache", {})
         for dev, color, radius, name in ((WIRE, WIRE_COLOR, 0.35, "wire"), (CATH, CATH_COLOR, 0.8, "cath")):
             pts = sim.device_polyline(dev)
             if len(pts) >= 2:
-                tube = pv.lines_from_points(pts).tube(radius=radius, n_sides=10)
-                self.pl.add_mesh(tube, color=color, name=name, pickable=False, reset_camera=False)
-            tip = sim.tracking_points(dev)[0]
-            self.pl.add_mesh(pv.Sphere(radius=radius * 1.6, center=tip), color=color, name=name + "_tip",
-                             pickable=False, reset_camera=False)
-        thr = env.cfg.success_threshold_mm
-        self.pl.add_mesh(pv.Sphere(radius=thr / 2, center=env.target_pos), color=TARGET_COLOR, opacity=0.8,
-                         name="target", pickable=False, reset_camera=False)
-        self.pl.add_mesh(pv.Sphere(radius=3.0, center=env.anat.nodes[env.start_node]), color=START_COLOR,
-                         name="start", pickable=False, reset_camera=False)
+                tube = pv.lines_from_points(pts).tube(radius=radius, n_sides=8)
+                if name in cache:
+                    cache[name].copy_from(tube)
+                else:
+                    cache[name] = tube
+                    self.pl.add_mesh(tube, color=color, name=name, pickable=False, reset_camera=False)
+            self._marker(cache, name + "_tip", sim.tracking_points(dev)[0], radius * 1.6, color, 1.0)
+        self._marker(cache, "target", env.target_pos, env.cfg.success_threshold_mm / 2, TARGET_COLOR, 0.8)
+        self._marker(cache, "start", env.anat.nodes[env.start_node], 3.0, START_COLOR, 1.0)
         if show_hud:
-            self.pl.add_text(self.hud_text(status), position="upper_left", font_size=9, name="hud", color="black")
+            self._text(cache, "hud", self.hud_text(status), "upper_left", 9, "black")
         if keys_help:
-            self.pl.add_text(keys_help, position="lower_left", font_size=8, name="keys", color="#374151")
+            self._text(cache, "keys", keys_help, "lower_left", 8, "#374151")
+
+    def _marker(self, cache: dict, name: str, center, radius: float, color: str, opacity: float) -> None:
+        actor = cache.get(name)
+        if actor is None:
+            actor = self.pl.add_mesh(self.pv.Sphere(radius=radius, center=(0.0, 0.0, 0.0)), color=color,
+                                     opacity=opacity, name=name, pickable=False, reset_camera=False)
+            cache[name] = actor
+        actor.SetPosition(*[float(c) for c in center])
+
+    def _text(self, cache: dict, name: str, text: str, position: str, size: int, color: str) -> None:
+        key = name + "_text"
+        if cache.get(key) == text:
+            return
+        actor = cache.get(name)
+        corners = {"lower_left": 0, "lower_right": 1, "upper_left": 2, "upper_right": 3}
+        if actor is not None and hasattr(actor, "SetText") and position in corners:
+            actor.SetText(corners[position], text)  # vtkCornerAnnotation
+        elif actor is not None and hasattr(actor, "SetInput"):
+            actor.SetInput(text)
+        else:
+            cache[name] = self.pl.add_text(text, position=position, font_size=size, name=name, color=color)
+        cache[key] = text
 
     def hud_text(self, status: str) -> str:
         env, sim = self.env, self.env.sim

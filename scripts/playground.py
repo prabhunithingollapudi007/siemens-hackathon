@@ -4,6 +4,7 @@ when an episode ends.
 
     python scripts/playground.py --model 0248_H_AOCERE_CAS
     python scripts/playground.py --model 0248_H_AOCERE_CAS --target left_carotid@-5
+    python scripts/playground.py --variant 10Left100Right --target right_carotid@-5 --autoplay plan
     python scripts/playground.py --model 0248_H_AOCERE_CAS --target left_carotid@-5 --record demo.gif
 
 Keys (each press = one control step of 1/7.5 s at full speed):
@@ -27,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -51,6 +53,9 @@ def main() -> None:
     ap.add_argument("--max-steps", type=int, default=600)
     ap.add_argument("--record", default=None, help="run the oracle off-screen and save a .gif (or .png)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--speed", type=float, default=1.0, help="autopilot speed relative to real time")
+    ap.add_argument("--autoplay", choices=["plan", "oracle"], default=None,
+                    help="start driving as soon as the window opens (plan = follow the planned trajectory)")
     args = ap.parse_args()
 
     import pyvista as pv
@@ -79,15 +84,16 @@ def main() -> None:
         m = episode_start_metrics(info["episode_metrics"])
         verdict = "SUCCESS" if m["success"] else "time limit reached"
         state["status"] = f"episode finished: {verdict} in {m['procedure_time_s']:.1f} s (press x to reset)"
-        print(markdown_table([summarize("this episode", [m])]))
+        print(markdown_table([summarize("this episode", [m])]), flush=True)
 
-    def do_step(action) -> None:
+    def do_step(action, render: bool = True) -> None:
         if state["done"]:
             return
         _, _, term, trunc, info = env.step(np.asarray(action, dtype=float))
         if term or trunc:
             finish(info)
-        scene.update(state["status"], KEYS_HELP)
+        if render:
+            scene.update(state["status"], KEYS_HELP)
 
     def reset(options=None) -> None:
         env.reset(options=options)
@@ -191,16 +197,36 @@ def main() -> None:
     pl.enable_point_picking(callback=on_pick, show_message=False, show_point=False, left_clicking=False)
 
     def tick(*_):
-        if state["auto"] and not state["done"]:
-            do_step(oracle.act(env))
-        elif state["follow"] and not state["done"] and state["follower"] is not None:
-            do_step(state["follower"].act(env))
+        """Autopilot at real-time pace: run the simulation steps that are due since the autopilot
+        started (scaled by --speed), then draw one frame. Slow frames drop, the robot keeps time."""
+        follow = state["follow"] and state["follower"] is not None
+        if state["done"] or not (state["auto"] or follow):
+            state["clock"] = None
+            return
+        now = time.monotonic()
+        if state.get("clock") is None:
+            state["clock"] = (now, env.steps)
+        t0, s0 = state["clock"]
+        due = s0 + int((now - t0) * args.speed / env.cfg.sim.dt) + 1
+        for _ in range(max(0, min(due - env.steps, 12))):
+            if state["done"]:
+                break
+            do_step(oracle.act(env) if state["auto"] else state["follower"].act(env), render=False)
+        scene.update(state["status"], KEYS_HELP)
 
-    pl.add_timer_event(max_steps=10_000_000, duration=60, callback=tick)
     scene.update("", KEYS_HELP)
     scene.set_front_view()
-    print(__doc__)
-    pl.show()
+    print(__doc__, flush=True)
+    # The window must exist before the timer is created: on Windows a VTK timer created earlier
+    # is tied to no window and never fires (the autopilot keys then do nothing).
+    pl.show(interactive_update=True, auto_close=False)
+    pl.add_timer_event(max_steps=10_000_000, duration=60, callback=tick)
+    if args.autoplay == "plan":
+        toggle_follow()
+    elif args.autoplay == "oracle":
+        toggle_auto()
+    pl.iren.start()
+    pl.close()
 
 
 def save_selection(env: VesselNavEnv, model: str, **nodes) -> Path:

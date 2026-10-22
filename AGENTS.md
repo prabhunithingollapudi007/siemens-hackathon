@@ -88,7 +88,8 @@ py -3.12 -m venv --system-site-packages .venv
 
 ## Known issues
 
-- **Playground autopilot (`h` and `space`) does not run on Windows.** `scripts/playground.py` creates its pyvista timer before the window exists, so the timer never fires. Creating it after the window is initialised works: `pl.show(interactive_update=True)`, then `add_timer_event`, then `pl.iren.start()`. Holding `o` steps the oracle as a workaround.
+- **Playground timers on Windows:** a pyvista/VTK timer created before the window exists never fires. `scripts/playground.py` therefore opens the window first (`pl.show(interactive_update=True, auto_close=False)`), then adds the timer, then calls `pl.iren.start()`. Keep that order.
+- **Interactive rendering is slow** (around 1 frame/s while GPU training runs). The autopilot steps the simulation at real-time pace and draws once per frame, and `Scene.update` updates actors in place. Don't go back to recreating actors every frame.
 - **The simulator is kinematic.** Devices ride the centerlines, and roll picks the branch at bifurcations. There are no wall forces, so contact force reports n/a and path-following error is 0. Policies trained here need fine-tuning in the organiser's rod-physics simulator.
 - **Junction gaps:** some VMR models (e.g. `0024_H_AO_H`) attach branches through long straight junction edges, because a branch centerline starts inside its parent. Code that measures distance to a planned path must densify it first (see `agents/follower.py`).
 
