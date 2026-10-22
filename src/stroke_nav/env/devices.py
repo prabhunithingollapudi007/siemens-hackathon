@@ -18,6 +18,12 @@ re-advancing makes a new branch choice. Pushing against a dead end is recorded a
 
 This is deliberately simple (no elasticity, no wall forces); a physics-based wire can later
 replace it behind the same interface.
+
+Device parameters: ``device_sim_params()`` (the default everywhere) builds both devices from
+device-parameters.json via ``organiser.spec.DEFAULT_SPEC``: tip angle and tip length per device,
+planner device specs whose diameters come from the same file, the organiser's control rate and
+speed limits, and the robot's travel limits. ``SimParams()`` itself keeps generic research
+defaults for tests and experiments that set every value explicitly.
 """
 
 from __future__ import annotations
@@ -57,6 +63,8 @@ class SimParams:
     tangent_window_mm: float = 5.0
     lookahead_nodes: int = 5
     max_insertion_mm: float = 1500.0
+    wire_travel_mm: float | None = None  # robot limit on guidewire insertion (None = unlimited)
+    cath_lead_max_mm: float | None = None  # robot limit: catheter insertion <= wire insertion + this
     initial_insertion_mm: tuple[float, float] = (20.0, 15.0)  # (wire, catheter)
     tip_offset_frac: float = 0.7  # bent tip end stays within this fraction of the vessel radius from the centerline
     enforce_lumen: bool = True  # a device cannot enter lumen narrower than its clearance needs
@@ -65,12 +73,41 @@ class SimParams:
         return self.guidewire if i == WIRE else self.microcatheter
 
 
+def device_sim_params(spec=None, tracking_tip_mm: float | None = None, robot_limits: bool = True) -> SimParams:
+    """Simulator settings for the robot's two devices, from device-parameters.json.
+
+    * tip angle and tip length of each device: ``tipAngle``/``tipLength`` and ``cathTipAngle``/
+      ``cathTipLength``; ``tracking_tip_mm`` overrides both tip lengths
+    * planner device specs ``radifocus_035`` / ``judkins_5f``, whose diameters come from the same file
+    * control period and speed limits: the organiser's action spec (5 Hz, 10 mm/s, 1 rad/s)
+    * robot travel: ``spec.robot`` (guidewire 264.5 mm, catheter at most 229.2 mm ahead of the wire)
+    """
+    from stroke_nav.organiser.spec import DEFAULT_SPEC
+    from stroke_nav.planning.constraints import CATHETER, GUIDEWIRE
+
+    spec = spec or DEFAULT_SPEC
+    v = spec.action.max_translation_m_s * 1000.0
+    w = float(np.degrees(spec.action.max_rotation_rad_s))
+    gw, ca = spec.guidewire_geometry(), spec.catheter_geometry()
+    gw_tip = gw["tip_length_mm"] if tracking_tip_mm is None else tracking_tip_mm
+    ca_tip = ca["tip_length_mm"] if tracking_tip_mm is None else tracking_tip_mm
+    return SimParams(
+        dt=spec.dt,
+        guidewire=DeviceParams("guidewire", v, w, gw["tip_angle_deg"], gw_tip, spec=GUIDEWIRE),
+        microcatheter=DeviceParams("catheter", v, w, ca["tip_angle_deg"], ca_tip, spec=CATHETER),
+        max_insertion_mm=spec.insertion_limits_mm[1],
+        wire_travel_mm=spec.robot.guidewire_travel_mm if robot_limits else None,
+        cath_lead_max_mm=spec.robot.catheter_lead_max_mm if robot_limits else None,
+        initial_insertion_mm=(3.0, 0.0),  # their reset leaves both tips at the entry
+    )
+
+
 class TrackSim:
     """Single-environment simulator (cheap enough for SB3 DummyVecEnv)."""
 
     def __init__(self, anatomy: Anatomy, params: SimParams | None = None):
         self.anat = anatomy
-        self.p = params or SimParams()
+        self.p = params or device_sim_params()
         self.rng = np.random.default_rng()
         from stroke_nav.planning.constraints import get_device
 
@@ -119,6 +156,11 @@ class TrackSim:
 
         old_L = self.L.copy()
         new_L = np.clip(self.L + v, 0.0, self.p.max_insertion_mm)
+        # robot travel: the modules stop at their limits (the device is not blocked by the vessel)
+        if self.p.wire_travel_mm is not None:
+            new_L[WIRE] = min(new_L[WIRE], max(self.p.wire_travel_mm, self.L[WIRE]))
+        if self.p.cath_lead_max_mm is not None:
+            new_L[CATH] = min(new_L[CATH], max(new_L[WIRE] + self.p.cath_lead_max_mm, self.L[CATH]))
         self.last_entered = []
         want = float(new_L.max())
         leader = WIRE if new_L[WIRE] >= new_L[CATH] else CATH

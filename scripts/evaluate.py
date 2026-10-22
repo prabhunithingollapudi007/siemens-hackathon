@@ -62,12 +62,12 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--model", default="0248_H_AOCERE_CAS")
     p.add_argument("--variant", default=None)
-    p.add_argument("--target", default="random:left_carotid@-15--1|right_carotid@-15--1",
+    p.add_argument("--target", default="random:left_carotid@20-70|right_carotid@20-70",  # within the robot's travel
                    help="target spec (node id, branch@mm, xyz:x,y,z, random:..., file:targets.json)")
     p.add_argument("--start", default=None, help="start spec (default: anatomy default)")
     p.add_argument("--policies", default="oracle,random,forward")
     p.add_argument("--episodes", type=int, default=50)
-    p.add_argument("--max-steps", type=int, default=400)
+    p.add_argument("--max-steps", type=int, default=600)  # the organiser's episode length
     p.add_argument("--success-device", default="microcatheter", choices=["microcatheter", "guidewire"])
     p.add_argument("--name", default=None, help="results subfolder name")
     args = p.parse_args()

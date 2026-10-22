@@ -25,7 +25,7 @@ import gymnasium as gym
 import numpy as np
 
 from stroke_nav.data.anatomy import Anatomy
-from stroke_nav.env.devices import CATH, WIRE, DeviceParams, SimParams
+from stroke_nav.env.devices import CATH, WIRE, SimParams, device_sim_params
 from stroke_nav.env.vessel_env import EnvConfig, VesselNavEnv
 from stroke_nav.organiser.fluoro import FluoroRenderer, GreyLevels
 from stroke_nav.organiser.frame import OrganiserFrame, default_frame
@@ -40,24 +40,10 @@ from stroke_nav.organiser.spec import (
 )
 
 
-def organiser_sim_params(spec: OrganiserSpec = DEFAULT_SPEC, tracking_tip_mm: float | None = None) -> SimParams:
-    """Our simulator configured with the organiser's control rate, speed limits and device tips.
-
-    Tip angle and tip length come from the device parameters (``tipAngle``/``tipLength`` and the
-    catheter equivalents); ``tracking_tip_mm`` overrides the tip length of both devices.
-    """
-    v = spec.action.max_translation_m_s * 1000.0  # mm/s
-    w = float(np.degrees(spec.action.max_rotation_rad_s))  # deg/s
-    gw, ca = spec.guidewire_geometry(), spec.catheter_geometry()
-    gw_tip = gw["tip_length_mm"] if tracking_tip_mm is None else tracking_tip_mm
-    ca_tip = ca["tip_length_mm"] if tracking_tip_mm is None else tracking_tip_mm
-    return SimParams(
-        dt=spec.dt,
-        guidewire=DeviceParams("guidewire", v, w, gw["tip_angle_deg"], gw_tip, spec="radifocus_035"),
-        microcatheter=DeviceParams("catheter", v, w, ca["tip_angle_deg"], ca_tip, spec="judkins_5f"),
-        max_insertion_mm=spec.insertion_limits_mm[1],
-        initial_insertion_mm=(3.0, 0.0),  # their reset leaves both tips at the entry
-    )
+def organiser_sim_params(spec: OrganiserSpec = DEFAULT_SPEC, tracking_tip_mm: float | None = None,
+                         robot_limits: bool = True) -> SimParams:
+    """Our simulator configured from the device parameters (see ``env.devices.device_sim_params``)."""
+    return device_sim_params(spec, tracking_tip_mm, robot_limits)
 
 
 @dataclass
@@ -93,7 +79,7 @@ class OrganiserCompatEnv(gym.Env):
         self.inner = VesselNavEnv(
             EnvConfig(model=cfg.model, variant=cfg.variant, target=self.anat.default_start(),
                       success_device="guidewire", success_threshold_mm=-1.0, max_steps=10**9,
-                      plan_routes=False, sim=organiser_sim_params(self.organiser_spec, cfg.tracking_tip_mm)),
+                      plan_routes=False, sim=organiser_sim_params(self.organiser_spec, cfg.tracking_tip_mm, cfg.robot_limits)),
             anatomy=self.anat,
         )
         self.renderer = renderer
@@ -134,7 +120,7 @@ class OrganiserCompatEnv(gym.Env):
         spec = self.organiser_spec
         action = np.clip(np.asarray(action, dtype=np.float64).reshape(4), -1.0, 1.0)
         phi_before = self.inner.sim.phi.copy()
-        _, _, _, _, info_inner = self.inner.step(self._robot_limited(action) if self.cfg.robot_limits else action)
+        _, _, _, _, info_inner = self.inner.step(action)
         self._roll += _wrap(self.inner.sim.phi - phi_before)
         self._blocked = np.asarray(info_inner["events"]["blocked"], dtype=bool)
         self._steps += 1
@@ -165,19 +151,6 @@ class OrganiserCompatEnv(gym.Env):
             m["goal_branch"] = self.anat.branch_of(self.goal_node)
             info["episode_metrics"] = m
         return obs, float(terms["total"]), terminated, truncated, info
-
-    def _robot_limited(self, action: np.ndarray) -> np.ndarray:
-        """Scale translations so insertions stay inside the robot's travel (the action seen by the
-        reward and the observation is the policy's own, like on their robot)."""
-        r, sim = self.organiser_spec.robot, self.inner.sim
-        step = self.organiser_spec.action.max_translation_m_s * 1000.0 * self.organiser_spec.dt  # mm at |a| = 1
-        a = action.copy()
-        wire_next = min(sim.L[WIRE] + a[0] * step, r.guidewire_travel_mm)
-        a[0] = (wire_next - sim.L[WIRE]) / step if a[0] > 0 else a[0]
-        cath_max = wire_next + r.catheter_lead_max_mm
-        if a[2] > 0:
-            a[2] = max(0.0, min(a[2], (cath_max - sim.L[CATH]) / step))
-        return a
 
     # ------------------------------------------------------------------ observation
     def _observe(self) -> dict:

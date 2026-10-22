@@ -4,10 +4,9 @@
     python scripts/run_astar.py --target right_carotid@40 --sim theirs          # organiser stack running
     python scripts/run_astar.py --target scenario --sim theirs                   # the cas-reference goal
     python scripts/run_astar.py --target left_subclavian@40 --sim theirs --noisy # their noisy tip topics
-    python scripts/run_astar.py --target right_carotid@40 --device-params my-devices.json
 
-Device geometry (tip length and angle, diameters) comes from --device-params, by default
-./device-parameters.json if present (the physics page's settings, same schema as their runs).
+Devices come from device-parameters.json, the repo's source of truth (STROKE_NAV_DEVICE_PARAMS
+selects another file).
 
 Success is the organiser's: guidewire tip within 5 mm of the goal for 3 consecutive 5 Hz steps,
 600 steps at most. Writes results/astar/<sim>_<target>.json (+ per-step CSV).
@@ -31,7 +30,7 @@ from stroke_nav.agents.route_follower import ClosedLoopRouteFollower, FollowerPa
 from stroke_nav.data.anatomy import Anatomy  # noqa: E402
 from stroke_nav.organiser.frame import default_frame  # noqa: E402
 from stroke_nav.organiser.spec import CAS_REFERENCE_GOALS_CM, DEFAULT_SPEC  # noqa: E402
-from stroke_nav.planning.constraints import get_device  # noqa: E402
+from stroke_nav.planning.constraints import CATHETER, GUIDEWIRE, get_device  # noqa: E402
 from stroke_nav.planning.planner import PathPlanner  # noqa: E402
 
 OUT = ROOT / "results" / "astar"
@@ -44,10 +43,10 @@ def build(anat: Anatomy, frame, target: str):
     else:
         node = anat.resolve(target)
         goal = anat.nodes[node].copy()
-    plan = PathPlanner(anat, "radifocus_035").plan(anat.default_start(), node)
+    plan = PathPlanner(anat, GUIDEWIRE).plan(anat.default_start(), node)
     if not plan.feasible:
         raise SystemExit(f"no feasible route: {plan.message}")
-    cath_r = get_device("judkins_5f").min_lumen_radius_mm
+    cath_r = get_device(CATHETER).min_lumen_radius_mm
     narrow = np.where(plan.radius < cath_r + 0.5)[0]
     cath_limit = float(plan.s[narrow[0]] - 10.0) if len(narrow) else float(plan.s[-1] - 20.0)
     return goal, node, plan, cath_limit
@@ -126,18 +125,11 @@ def main() -> None:
     ap.add_argument("--sim", choices=("ours", "theirs"), default="ours")
     ap.add_argument("--noisy", action="store_true", help="theirs: steer on their noisy tip topics")
     ap.add_argument("--max-steps", type=int, default=DEFAULT_SPEC.environment.max_steps)
-    ap.add_argument("--device-params", default=None, help="device-parameters.json (default: ./device-parameters.json if present)")
     args = ap.parse_args()
 
-    from stroke_nav.organiser.spec import ORGANISER_DEVICE_PARAMETERS_HASH, device_parameters_hash, load_device_parameters
-    dp = Path(args.device_params) if args.device_params else ROOT / "device-parameters.json"
-    spec = load_device_parameters(dp) if dp.is_file() else DEFAULT_SPEC
-    h = device_parameters_hash(spec.device_parameters())
-    gw, ca = spec.guidewire_geometry(), spec.catheter_geometry()
-    print(f"[astar] devices from {dp.name if dp.is_file() else 'built-in defaults'} (hash {h[:12]}, "
-          f"{'matches' if h == ORGANISER_DEVICE_PARAMETERS_HASH else 'DIFFERS from'} the organiser's run): "
-          f"wire {gw['outer_diameter_mm']} mm, tip {gw['tip_length_mm']:.0f} mm @ {gw['tip_angle_deg']:.0f} deg; "
-          f"catheter {ca['outer_diameter_mm']} mm, tip {ca['tip_length_mm']:.0f} mm @ {ca['tip_angle_deg']:.0f} deg")
+    from stroke_nav.organiser.spec import describe_devices
+    spec = DEFAULT_SPEC
+    print(f"[astar] {describe_devices(spec)}")
 
     anat, frame = Anatomy.load("0248_H_AOCERE_CAS"), default_frame()
     goal, node, plan, cath_limit = build(anat, frame, args.target)

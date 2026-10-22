@@ -14,6 +14,11 @@ evaluation:
 
 ``load_from_repo(path)`` re-reads the live files if a checkout of their repo is available, so a
 newer organiser configuration can be picked up without editing this file.
+
+Device parameters: ``device-parameters.json`` at the repository root is the source of truth for
+both devices in every simulator, planner and robot path of this repo (``DEFAULT_SPEC`` is loaded
+from it at import). Set ``STROKE_NAV_DEVICE_PARAMS`` to use another file. The built-in copy
+``DEFAULT_DEVICE_CONTROLS`` is only a fallback when no file is found (with a warning).
 """
 
 from __future__ import annotations
@@ -22,6 +27,8 @@ import copy
 import hashlib
 import json
 import math
+import os
+import warnings
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
@@ -280,4 +287,39 @@ CURRICULUM_GOALS_M = {
     "far": ((0.0, 0.0, 0.12), (0.0, 0.0, 0.15), (0.0, 0.0, 0.18)),
 }
 
-DEFAULT_SPEC = OrganiserSpec()
+REPO_ROOT = Path(__file__).resolve().parents[3]
+DEVICE_PARAMETERS_ENV = "STROKE_NAV_DEVICE_PARAMS"
+BUILTIN_SPEC = OrganiserSpec()  # organiser snapshot, used only when no device-parameters.json is found
+
+
+def device_parameters_path() -> Path:
+    """The device-parameters file in use: ``$STROKE_NAV_DEVICE_PARAMS`` or ``<repo>/device-parameters.json``."""
+    env = os.environ.get(DEVICE_PARAMETERS_ENV)
+    return Path(env) if env else REPO_ROOT / "device-parameters.json"
+
+
+def load_active_spec() -> OrganiserSpec:
+    """Spec whose device controls come from ``device_parameters_path()`` (fallback: the built-in copy)."""
+    path = device_parameters_path()
+    if path.is_file():
+        return load_device_parameters(path)
+    if os.environ.get(DEVICE_PARAMETERS_ENV):
+        raise FileNotFoundError(f"{DEVICE_PARAMETERS_ENV} points to a missing file: {path}")
+    warnings.warn(f"{path} not found; using the built-in organiser device parameters", stacklevel=2)
+    return BUILTIN_SPEC
+
+
+def describe_devices(spec: OrganiserSpec | None = None) -> str:
+    """One line naming the device file, its hash status and the geometry it sets."""
+    spec = spec or DEFAULT_SPEC
+    path = device_parameters_path()
+    h = device_parameters_hash(spec.device_parameters())
+    gw, ca = spec.guidewire_geometry(), spec.catheter_geometry()
+    src = path.name if path.is_file() else "built-in copy"
+    status = "matches the organiser's run" if h == ORGANISER_DEVICE_PARAMETERS_HASH else "DIFFERS from the organiser's run"
+    return (f"devices from {src} (sha256 {h[:12]}, {status}): {gw['preset']} wire {gw['outer_diameter_mm']} mm, "
+            f"tip {gw['tip_length_mm']:.0f} mm @ {gw['tip_angle_deg']:.0f} deg; {ca['preset']} catheter "
+            f"{ca['outer_diameter_mm']} mm, tip {ca['tip_length_mm']:.0f} mm @ {ca['tip_angle_deg']:.0f} deg")
+
+
+DEFAULT_SPEC = load_active_spec()

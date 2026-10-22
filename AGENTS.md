@@ -53,14 +53,15 @@ py -3.12 -m venv --system-site-packages .venv
 ## Commands
 
 ```bash
-.venv\Scripts\python.exe -m pytest -q                                   # full suite (52 tests), about 1 min
+.venv\Scripts\python.exe -m pytest -q                                   # full suite (75 tests), about 2 min
 .venv\Scripts\python.exe scripts/playground.py --model 0248_H_AOCERE_CAS   # interactive 3D window
-.venv\Scripts\python.exe scripts/plan_path.py --target right_carotid@-5 --follow 20 --record
+.venv\Scripts\python.exe scripts/plan_path.py --target right_carotid@40 --follow 20 --record
 .venv\Scripts\python.exe scripts/evaluate.py --policies oracle,random,forward --episodes 50
 .venv\Scripts\python.exe scripts/train_sac.py --total-timesteps 50000 --device cuda
 .venv\Scripts\python.exe scripts/check_handover.py --run-dir runs/<run_id>
 .venv\Scripts\python.exe scripts/export_handover.py --run-dir runs/<run_id> --plan-target right_carotid_external@21
 .venv\Scripts\python.exe scripts/run_astar.py --target right_carotid@40 --sim ours          # closed-loop A* (--sim theirs: live stack)
+.venv\Scripts\python.exe scripts/demo_astar.py                                         # 3D demo of A* with the organiser devices (--record x.gif)
 .venv\Scripts\python.exe scripts/measure_gap.py                                        # ours vs their physics (live stack needed)
 ```
 
@@ -87,7 +88,10 @@ py -3.12 -m venv --system-site-packages .venv
 2. **SAC models must reference `openng3_rl.policy.FluoroStateExtractor`.** Call `stroke_nav.organiser.ensure_policy_importable()` before building or loading models.
    - Do not rename `compat/openng3_rl` or change the network layers.
 3. **Models must be pickled under NumPy 1.x.** NumPy 2 pickles contain `numpy._core`, which the organiser's container (NumPy 1.26.4) cannot load. `check_handover.py` detects this.
-4. **The device parameters in `organiser/spec.py` must hash to the organiser run's value** (`38b1ea53…`). Change them only by loading the organiser's newer files with `spec.load_from_repo(...)`.
+4. **`device-parameters.json` is the source of truth for both devices, and must hash to the organiser run's value** (`38b1ea53…`) for a hand-over.
+   - `organiser.spec.DEFAULT_SPEC` is loaded from it at import. Simulator defaults (`env.devices.device_sim_params`), the planner's `radifocus_035`/`judkins_5f` diameters and run folders all derive from it.
+   - Do not hard-code device geometry, speeds or travel anywhere else. `SimParams()` holds generic research values for tests only.
+   - `STROKE_NAV_DEVICE_PARAMS` selects another file for experiments. `tests/test_device_parameters.py` checks the repo file and the plumbing.
 5. **`scenario.json` written to run folders must equal their `cas-reference` manifest** (mesh sha256 `04fbd581…`).
 6. **The frame transform is fitted, not assumed.** Their goal file's comment claims an axis flip that the geometry does not have. Refit with `organiser.frame.fit_frame` if the mesh changes.
 
@@ -96,7 +100,7 @@ py -3.12 -m venv --system-site-packages .venv
 - **Playground timers on Windows:** a pyvista/VTK timer created before the window exists never fires. `scripts/playground.py` therefore opens the window first (`pl.show(interactive_update=True, auto_close=False)`), then adds the timer, then calls `pl.iren.start()`. Keep that order.
 - **Interactive rendering is slow** (around 1 frame/s while GPU training runs). The autopilot steps the simulation at real-time pace and draws once per frame, and `Scene.update` updates actors in place. Don't go back to recreating actors every frame.
 - **Their live stack accepts one physics page.** The bridge's command node sends commands only to the newest browser connection, so a second `catheter_guidewire_ros2.html` tab steals control and also publishes its own states. `organiser_stack.ps1 status` counts connected pages; close extras.
-- **Their robot's travel is limited:** guidewire 264.5 mm, catheter at most 229.2 mm ahead of the wire (`RobotSpec`). The cas-reference goal is 288 mm along the vessels, so it is out of reach as configured.
+- **Their robot's travel is limited:** guidewire 264.5 mm, catheter at most 229.2 mm ahead of the wire (`RobotSpec`), enforced in our simulator by default. The cas-reference goal is 288 mm along the vessels and the distal ICA/M1 of 0248 450-530 mm, so they are out of reach as configured. Default targets are therefore mid-carotid (`@20-70`).
 - **The simulator is kinematic.** Devices ride the centerlines, and roll picks the branch at bifurcations. There are no wall forces, so contact force reports n/a and path-following error is 0. Policies trained here need fine-tuning in the organiser's rod-physics simulator.
 - **Junction gaps:** some VMR models (e.g. `0024_H_AO_H`) attach branches through long straight junction edges, because a branch centerline starts inside its parent. Code that measures distance to a planned path must densify it first (see `agents/follower.py`).
 - **TinyGPU cluster jobs** (`hpc/`): Slurm rejects scripts with CRLF line endings, so keep `hpc/*.sh` and `*.sbatch` LF (`.gitattributes` enforces it; check with `tr -cd '\r' < file | wc -c` after editing on Windows). TinyGPU also rejects `--mem` on GPU jobs. Paths stored in `data/processed/*.npz` must stay POSIX-style so data built on Windows loads on Linux.

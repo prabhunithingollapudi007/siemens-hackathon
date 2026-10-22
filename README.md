@@ -87,7 +87,7 @@ For 0248, the carotid paths run CCA, ICA, then M1; `*_anterior` is A1; `*_caroti
 
 ```bash
 python scripts/evaluate.py --policies oracle,random,forward --episodes 100 \
-    --target "random:left_carotid@-15--1|right_carotid@-15--1"
+    --target "random:left_carotid@20-70|right_carotid@20-70"
 ```
 
 The script writes `results/<name>/start_summary.md` and `episodes.csv`. The reported metrics are:
@@ -110,9 +110,9 @@ policy plugs in as `ppo:path/to/model.zip`.
 ## 4. Plan a feasible path and a robot trajectory
 
 ```bash
-python scripts/plan_path.py --target right_carotid@-5 --follow 20 --record
-python scripts/plan_path.py --variant 10Left100Right --target right_carotid@-5 --follow 20
-python scripts/plan_path.py --target right_carotid@-5 --forbid anterior_connector,left_communicating,right_communicating,right_posterior
+python scripts/plan_path.py --target right_carotid@40 --follow 20 --record
+python scripts/plan_path.py --variant 10Left100Right --target right_carotid@40 --follow 20
+python scripts/plan_path.py --target right_carotid@40 --forbid anterior_connector,left_communicating,right_communicating,right_posterior
 python scripts/plan_path.py --target left_anterior@20 --device guidewire --hard-curvature
 python scripts/compare_routes.py        # side-by-side GIF: shortest path vs device-aware plan (occluded right ICA)
 ```
@@ -129,7 +129,7 @@ The pipeline has four parts (`src/stroke_nav/planning/`):
 3. **Trajectory** (`trajectory.py`).
    - The speed profile is limited by curvature, narrow lumen and a slow zone before each bifurcation, then by acceleration.
    - For each bifurcation, the guidewire roll that makes the pre-curved tip enter the planned vessel is computed with the simulator's own tip model.
-   - The output is a joint-space reference at 7.5 Hz: inserted length and roll for the guidewire and the microcatheter.
+   - The output is a joint-space reference at the control rate (5 Hz): inserted length and roll for the guidewire and the catheter.
      The wire pauses before a junction until it has rotated, and the catheter trails 10 mm behind, then advances to the target.
 4. **Follower** (`agents/follower.py`). The follower tracks the reference using only joint encoders and the observed tip position.
    If the tip leaves the planned path, it backs up past the last bifurcation and retries.
@@ -153,7 +153,7 @@ from stroke_nav.planning.planner import PathPlanner
 from stroke_nav.planning.trajectory import build_trajectory
 
 anat = Anatomy.load("0248_H_AOCERE_CAS")
-plan = PathPlanner(anat, "microcatheter").plan(anat.default_start(), anat.resolve("right_carotid@-5"))
+plan = PathPlanner(anat, "radifocus_035").plan(anat.default_start(), anat.resolve("right_carotid@40"))
 traj = build_trajectory(plan)          # traj.t, traj.L_wire, traj.phi_wire, traj.L_cath, traj.phi_cath
 traj.to_csv("trajectory.csv")
 ```
@@ -247,8 +247,15 @@ Check GPU use of a running job with `srun.tinygpu --jobid=<id> --pty nvidia-smi`
 
 ## Environment (`stroke_nav.env.vessel_env.VesselNavEnv`)
 
-- **Action** `Box(-1, 1, (4,))`: speeds scaled by `v_max` (default 40 mm/s) and `w_max` (default 180 °/s) per device, at 7.5 Hz.
-  Tune the limits in `EnvConfig.sim.guidewire` and `EnvConfig.sim.microcatheter` (`DeviceParams`), which also set the tip angle.
+- **Devices: `device-parameters.json` is the source of truth.** Every simulator, planner and robot path reads it
+  through `stroke_nav.organiser.spec.DEFAULT_SPEC`: tip angle and length of both devices, and the planner's device
+  diameters (`radifocus_035`, `judkins_5f`). With the organiser's robot come the control rate (5 Hz), speed limits
+  (10 mm/s, 1 rad/s) and travel (guidewire 264.5 mm, catheter at most 229.2 mm ahead of the wire).
+  `STROKE_NAV_DEVICE_PARAMS=<file>` selects another file. Stiffness, friction and damping only matter to the
+  organiser's rod physics, because our simulator is kinematic. Targets past the robot's travel cannot be reached
+  (for 0248, the distal ICA and M1 lie 450-530 mm along the vessels).
+- **Action** `Box(-1, 1, (4,))`: `[v_guidewire, w_guidewire, v_catheter, w_catheter]`, scaled by the speed limits above.
+  `device_sim_params()` builds the defaults; pass an explicit `SimParams` only for experiments outside the organiser's setup.
 - **Observation** (46 floats): 3 tracking points per device tip, now and at the previous step, plus the target, the target minus the tip, and the previous action.
   These are the inputs used by Robertshaw et al. 2024 and 2025.
 - **Reward:** `-0.005 - 0.01 * Δ(geodesic distance to target, mm) + 1.0 on success`.

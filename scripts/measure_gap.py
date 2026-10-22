@@ -45,7 +45,9 @@ def planned_actions(target_spec: str = "right_carotid_external@21") -> np.ndarra
     from stroke_nav.planning.trajectory import build_trajectory
 
     anat = Anatomy.load("0248_H_AOCERE_CAS")
-    plan = PathPlanner(anat, "radifocus_035").plan(anat.default_start(), anat.resolve(target_spec))
+    from stroke_nav.planning.constraints import GUIDEWIRE
+
+    plan = PathPlanner(anat, GUIDEWIRE).plan(anat.default_start(), anat.resolve(target_spec))
     return trajectory_policy_actions(build_trajectory(plan, organiser_sim_params()))
 
 

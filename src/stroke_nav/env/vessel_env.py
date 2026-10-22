@@ -23,7 +23,7 @@ import numpy as np
 from gymnasium import spaces
 
 from stroke_nav.data.anatomy import Anatomy
-from stroke_nav.env.devices import CATH, WIRE, SimParams, TrackSim
+from stroke_nav.env.devices import CATH, WIRE, SimParams, TrackSim, device_sim_params
 
 
 @dataclass
@@ -41,11 +41,11 @@ class EnvConfig:
     wrong_branch_penalty: float = 0.0
     include_catheter_obs: bool = True
     plan_routes: bool = True  # route = device-aware plan for the success device (else plain shortest path)
-    sim: SimParams = field(default_factory=SimParams)
+    sim: SimParams = field(default_factory=device_sim_params)  # devices from device-parameters.json
 
 
 class VesselNavEnv(gym.Env):
-    metadata = {"render_modes": [], "render_fps": 7.5}
+    metadata = {"render_modes": [], "render_fps": 5.0}
 
     def __init__(self, config: EnvConfig | None = None, anatomy: Anatomy | None = None, **overrides):
         super().__init__()

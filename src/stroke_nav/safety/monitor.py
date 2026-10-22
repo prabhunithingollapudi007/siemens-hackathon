@@ -21,8 +21,11 @@ R1 speed envelope     advance speed limited by the lumen size at the tip (naviga
                       depth reached in a wrong vessel is bounded by the speed at the junction
 R2 contact back-off   after a blocked push (or tip force above the limit) the device may not push
                       again for a few steps; it backs off instead (prevents slack build-up/prolapse)
-R3 corridor           tracked tip further than ``corridor_mm`` from the approved path: no further
-                      advance of the leading device (early wrong-branch containment); retract allowed
+R3 corridor           tracked tip further than ``corridor_mm`` + ``corridor_lumen_fraction`` x the
+                      local lumen radius from the approved path: no further advance of the leading
+                      device (early wrong-branch containment); retract allowed. The lumen term is
+                      there because a pre-curved tip rests against the vessel wall, not on the
+                      centerline (their rod physics: 2-9 mm off it in the aorta)
 R4 tracking loss      ``hold_after_dropouts`` consecutive dropouts, or an implausible tip jump: hold
 R5 insertion fence    no advance beyond the target along the approved path (+ margin)
 R6 wire leads         the microcatheter may not overtake the guidewire tip by more than
@@ -64,6 +67,7 @@ class SafetyConfig:
     backoff_speed: float = 0.15  # fraction of v_max
     # R3
     corridor_mm: float = 4.0
+    corridor_lumen_fraction: float = 0.7  # + this x lumen radius at the nearest path point (tip against the wall)
     # R4
     hold_after_dropouts: int = 2
     jump_margin_mm: float = 3.0  # plausibility: tip may move v_max*dt + tip swing + margin per step
@@ -153,11 +157,12 @@ class SafetyMonitor:
             return self._done(np.zeros(4), ["R4"], override, 0.0, 0.0)
 
         # ---- geometry of the tracked tip relative to the approved path
-        dev, zone = 0.0, 1.0
+        dev, zone, corridor = 0.0, 1.0, cfg.corridor_mm
         if self.last_tip is not None and self._tree is not None:
             dev, k = self._tree.query(self.last_tip)
             r = float(self.path_radius[k])
             zone = next(f for rmin, f in cfg.speed_zones if r >= rmin)
+            corridor = cfg.corridor_mm + cfg.corridor_lumen_fraction * r
 
         # ---- R1 speed envelope (also applies to the operator)
         if "R1" in on:
@@ -185,7 +190,7 @@ class SafetyMonitor:
                             a[idx] = -cfg.backoff_speed
                             fired.append("R2")
             # ---- R3 corridor: the leading device may not go deeper while off the approved path
-            if "R3" in on and dev > cfg.corridor_mm:
+            if "R3" in on and dev > corridor:
                 idx = 0 if leader == WIRE else 2
                 if a[idx] > 0:
                     a[idx] = 0.0

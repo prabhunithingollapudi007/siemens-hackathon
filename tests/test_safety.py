@@ -42,10 +42,19 @@ def test_r2_force_limit_on_leader():
 
 
 def test_r3_corridor_blocks_advance_allows_retract():
+    # corridor = 4 mm + 0.7 x lumen radius (10 mm here) = 11 mm from the approved path
     mon = straight_monitor()
-    d = mon.filter([1, 0.5, 0, 0], meas(tip=(6.0, 0.0, 50.0)))
+    d = mon.filter([1, 0.5, 0, 0], meas(tip=(12.0, 0.0, 50.0)))
     assert d.action[0] == 0 and d.action[1] == pytest.approx(0.5) and "R3" in d.fired
-    assert mon.filter([-0.5, 0, 0, 0], meas(tip=(6.0, 0.0, 49.0))).action[0] == pytest.approx(-0.5)
+    assert mon.filter([-0.5, 0, 0, 0], meas(tip=(12.0, 0.0, 49.0))).action[0] == pytest.approx(-0.5)
+
+
+def test_r3_allows_a_tip_resting_against_the_wall():
+    """A pre-curved tip lies against the vessel wall, off the centerline but inside the lumen."""
+    d = straight_monitor().filter([1, 0, 0, 0], meas(tip=(7.0, 0.0, 50.0)))
+    assert d.action[0] == pytest.approx(1.0) and "R3" not in d.fired
+    narrow = straight_monitor(radius=2.0).filter([1, 0, 0, 0], meas(L=(50, 30), tip=(7.0, 0.0, 50.0)))
+    assert "R3" in narrow.fired  # the same offset in a 2 mm vessel is outside the lumen
 
 
 def test_r4_hold_after_consecutive_dropouts_and_on_jumps():
@@ -126,8 +135,13 @@ def test_shield_does_not_deadlock_follower_under_stress():
     from stroke_nav.agents.follower import TrajectoryFollower
     from stroke_nav.safety.demo_anatomy import demo_anatomy
 
+    from stroke_nav.env.devices import device_sim_params
+
     anat = demo_anatomy()
-    env = SafetyShield(VesselNavEnv(EnvConfig(target="random:left_carotid@-40--3|right_carotid@-40--3", max_steps=400),
+    # Devices from device-parameters.json. The demo routes (~390 mm) are longer than the robot's
+    # guidewire travel (264.5 mm), so travel limits are off here; 10 mm/s needs ~500 steps.
+    env = SafetyShield(VesselNavEnv(EnvConfig(target="random:left_carotid@-40--3|right_carotid@-40--3", max_steps=800,
+                                              sim=device_sim_params(robot_limits=False)),
                                     anatomy=anat), faults=FaultModel.stress(), monitor=True)
     res = [run_episode(env, TrajectoryFollower(), seed=s) for s in range(6)]
     assert all(r["success"] for r in res)

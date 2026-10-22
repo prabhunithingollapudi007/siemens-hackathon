@@ -1,6 +1,8 @@
 """Device physical limits and vessel geometry measures used by the planner.
 
-Device numbers are representative catalogue-level values, not a specific product's IFU:
+The robot's guidewire and catheter (``radifocus_035``, ``judkins_5f``) take their diameters from
+device-parameters.json. The other entries are representative catalogue-level values, not a
+specific product's IFU:
     guidewire 0.014"      OD 0.36 mm (e.g. Synchro-14 class), very flexible soft tip
     microcatheter 1.7F    distal OD 0.57 mm (e.g. Echelon-10 class)
     guide catheter 6F     OD 2.0 mm, stiff; only for the extracranial route
@@ -43,10 +45,30 @@ DEVICES: dict[str, DeviceSpec] = {
     "guidewire": DeviceSpec("guidewire 0.014in", outer_diameter_mm=0.36, min_bend_radius_mm=1.0),
     "microcatheter": DeviceSpec("microcatheter 1.7F", outer_diameter_mm=0.57, min_bend_radius_mm=2.0),
     "guide6f": DeviceSpec("guide catheter 6F", outer_diameter_mm=2.0, min_bend_radius_mm=10.0),
-    # Devices used by the organiser's simulator (device-parameters.json presets "radifocus", "judkins").
-    "radifocus_035": DeviceSpec("guidewire 0.035in (radifocus)", outer_diameter_mm=0.89, min_bend_radius_mm=3.0),
-    "judkins_5f": DeviceSpec("catheter 5F (judkins)", outer_diameter_mm=1.67, min_bend_radius_mm=8.0),
 }
+
+# The two devices the robot drives. Their geometry comes from device-parameters.json (the source of
+# truth, via organiser.spec.DEFAULT_SPEC); the bend limits are not in that file and stay assumptions.
+GUIDEWIRE = "radifocus_035"
+CATHETER = "judkins_5f"
+MIN_BEND_RADIUS_MM = {GUIDEWIRE: 3.0, CATHETER: 8.0}
+
+
+def robot_devices(spec=None) -> dict[str, DeviceSpec]:
+    """Planner specs of the robot's guidewire and catheter, from the device parameters."""
+    from stroke_nav.organiser.spec import DEFAULT_SPEC
+
+    spec = spec or DEFAULT_SPEC
+    gw, ca = spec.guidewire_geometry(), spec.catheter_geometry()
+    return {
+        GUIDEWIRE: DeviceSpec(f"guidewire {gw['outer_diameter_mm']} mm ({gw['preset']})", outer_diameter_mm=gw["outer_diameter_mm"],
+                              min_bend_radius_mm=MIN_BEND_RADIUS_MM[GUIDEWIRE]),
+        CATHETER: DeviceSpec(f"catheter {ca['outer_diameter_mm']} mm ({ca['preset']})", outer_diameter_mm=ca["outer_diameter_mm"],
+                             min_bend_radius_mm=MIN_BEND_RADIUS_MM[CATHETER]),
+    }
+
+
+DEVICES.update(robot_devices())
 
 
 def get_device(name: str | DeviceSpec) -> DeviceSpec:

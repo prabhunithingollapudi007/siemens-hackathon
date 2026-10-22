@@ -78,9 +78,17 @@ class Scene:
                                      text_color="#4c1d95", shape_opacity=0.6, name=name + "_labels",
                                      always_visible=True, reset_camera=False)
 
-    def draw_path(self, points: np.ndarray, color: str = "#6b7280", name: str = "baseline", radius: float = 0.5) -> None:
+    def draw_path(self, points: np.ndarray, color: str = "#6b7280", name: str = "baseline", radius: float = 0.5,
+                  opacity: float = 0.6) -> None:
         tube = self.pv.lines_from_points(points).tube(radius=radius, n_sides=8)
-        self.pl.add_mesh(tube, color=color, opacity=0.6, name=name, pickable=False, reset_camera=False)
+        self.pl.add_mesh(tube, color=color, opacity=opacity, name=name, pickable=False, reset_camera=False)
+
+    def focus(self, points: np.ndarray, margin_mm: float = 30.0, zoom: float = 1.3) -> None:
+        """Keep the front view's direction but frame ``points`` (e.g. a planned route) plus a margin."""
+        lo, hi = points.min(0) - margin_mm, points.max(0) + margin_mm
+        self.set_front_view()
+        self.pl.reset_camera(bounds=(*_interleave(lo, hi),))
+        self.pl.camera.zoom(zoom)
 
     def clear(self, *names: str) -> None:
         for n in names:

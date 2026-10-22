@@ -7,7 +7,10 @@ when an episode ends.
     python scripts/playground.py --variant 10Left100Right --target right_carotid@-5 --autoplay plan
     python scripts/playground.py --model 0248_H_AOCERE_CAS --target left_carotid@-5 --record demo.gif
 
-Keys (each press = one control step of 1/7.5 s at full speed):
+Devices, control rate and speeds come from device-parameters.json and the organiser's robot
+(5 Hz, 10 mm/s, 1 rad/s; guidewire travel 264.5 mm).
+
+Keys (each press = one control step of 0.2 s at full speed):
     Up / Down       guidewire advance / retract
     Left / Right    guidewire rotate
     i / k           microcatheter advance / retract
@@ -48,7 +51,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default="0248_H_AOCERE_CAS")
     ap.add_argument("--variant", default=None)
-    ap.add_argument("--target", default="left_carotid@-5", help="target spec (see stroke_nav.data.anatomy)")
+    ap.add_argument("--target", default="left_carotid@60", help="target spec (see stroke_nav.data.anatomy)")
     ap.add_argument("--start", default=None)
     ap.add_argument("--max-steps", type=int, default=600)
     ap.add_argument("--record", default=None, help="run the oracle off-screen and save a .gif (or .png)")
@@ -217,6 +220,8 @@ def main() -> None:
     scene.update("", KEYS_HELP)
     scene.set_front_view()
     print(__doc__, flush=True)
+    from stroke_nav.organiser.spec import describe_devices
+    print(describe_devices(), flush=True)
     # The window must exist before the timer is created: on Windows a VTK timer created earlier
     # is tied to no window and never fires (the autopilot keys then do nothing).
     pl.show(interactive_update=True, auto_close=False)

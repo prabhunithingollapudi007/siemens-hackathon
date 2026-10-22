@@ -27,7 +27,7 @@ from stroke_nav.agents.scripted import ScriptedOracle, run_episode
 from stroke_nav.data.anatomy import Anatomy
 from stroke_nav.env.vessel_env import EnvConfig, VesselNavEnv
 from stroke_nav.eval.start_metrics import episode_start_metrics, markdown_table, summarize
-from stroke_nav.planning.constraints import DEVICES
+from stroke_nav.planning.constraints import DEVICES, GUIDEWIRE
 from stroke_nav.planning.planner import PathPlanner, PlannerWeights, compare_plans
 from stroke_nav.planning.trajectory import TrajectoryParams, build_trajectory
 
@@ -36,10 +36,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default="0248_H_AOCERE_CAS")
     ap.add_argument("--variant", default=None)
-    ap.add_argument("--target", default="right_carotid@-5")
+    ap.add_argument("--target", default="right_carotid@40")
     ap.add_argument("--start", default=None)
-    ap.add_argument("--device", default="microcatheter", choices=sorted(DEVICES),
-                    help="device the path must be feasible for (the microcatheter must reach the clot)")
+    ap.add_argument("--device", default=GUIDEWIRE, choices=sorted(DEVICES),
+                    help="device the path must be feasible for (default: the robot's guidewire from device-parameters.json)")
     ap.add_argument("--hard-curvature", action="store_true", help="forbid bends tighter than the device's minimum bend radius")
     ap.add_argument("--w-curvature", type=float, default=PlannerWeights.curvature)
     ap.add_argument("--w-narrow", type=float, default=PlannerWeights.narrow)

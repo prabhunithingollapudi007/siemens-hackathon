@@ -68,7 +68,9 @@ def main() -> None:
     p.add_argument("--policies", default="follower,sloppy,forward")
     p.add_argument("--faults", default="clean,organiser,stress")
     p.add_argument("--episodes", type=int, default=30)
-    p.add_argument("--max-steps", type=int, default=400)
+    p.add_argument("--max-steps", type=int, default=600, help="the organiser's episode length (10 mm/s devices)")
+    p.add_argument("--no-robot-limits", action="store_true",
+                   help="ignore the robot's travel (guidewire 264.5 mm); distal carotid targets lie beyond it")
     p.add_argument("--success-device", default="microcatheter", choices=["microcatheter", "guidewire"])
     p.add_argument("--name", default=None)
     args = p.parse_args()
@@ -80,8 +82,12 @@ def main() -> None:
         anat = demo_anatomy()
     target = args.target or ("random:left_carotid@-40--3|right_carotid@-40--3" if args.synthetic
                              else "random:left_carotid@-15--1|right_carotid@-15--1")
+    from stroke_nav.env.devices import device_sim_params
+    from stroke_nav.organiser.spec import describe_devices
+
+    print(describe_devices(), flush=True)
     cfg = EnvConfig(model=args.model, variant=args.variant, target=target, max_steps=args.max_steps,
-                    success_device=args.success_device)
+                    success_device=args.success_device, sim=device_sim_params(robot_limits=not args.no_robot_limits))
     base = VesselNavEnv(cfg, anatomy=anat)
     out_dir = Path("results") / (args.name or f"{base.anat.name}_safety")
     out_dir.mkdir(parents=True, exist_ok=True)

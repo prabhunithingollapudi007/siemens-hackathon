@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from stroke_nav.env.devices import WIRE, SimParams, TrackSim
+from stroke_nav.env.devices import WIRE, SimParams, TrackSim, device_sim_params
 from stroke_nav.planning.constraints import VesselGeometry
 from stroke_nav.planning.planner import Plan
 
@@ -121,7 +121,7 @@ def build_trajectory(plan: Plan, sim_params: SimParams | None = None,
                      params: TrajectoryParams | None = None) -> Trajectory:
     if not plan.feasible or not plan.nodes:
         raise ValueError(f"cannot build a trajectory from an infeasible plan: {plan.message}")
-    sp = sim_params or SimParams()
+    sp = sim_params or device_sim_params()
     tp = params or TrajectoryParams()
     a = plan.anatomy
     dev = plan.device
