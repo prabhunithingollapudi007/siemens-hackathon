@@ -185,6 +185,9 @@ dropped into their `runs/` folder:
 .venv\Scripts\python.exe scripts/export_handover.py --run-dir runs/<run_id> --plan-target right_carotid_external@21
 ```
 
+The organiser's own stack also runs on this laptop: `powershell -ExecutionPolicy Bypass -File tools\organiser_stack.ps1 start`.
+See [docs/ORGANISER_SETUP.md](docs/ORGANISER_SETUP.md), section 11.
+
 [docs/HANDOVER.md](docs/HANDOVER.md) lists what is identical, what is approximate and what is missing,
 and gives the exact commands to run on their side. The organiser's own 210k-step checkpoint loads in
 our compatible environment with identical spaces.

@@ -30,6 +30,7 @@ patient vessel models from the Vascular Model Repository (VMR). It contains:
 | `scripts/` | command-line entry points (fetch, plot, playground, plan, evaluate, compare, train, check, export) |
 | `tests/` | pytest suite, mostly on synthetic vessel trees |
 | `docs/` | organiser reference and hand-over guide |
+| `tools/` | `organiser_stack.ps1`: start, stop and check the organiser's own stack locally (Docker Desktop); see docs/ORGANISER_SETUP.md §11 |
 
 Git ignores `data/`, `runs/`, `results/`, `handover/`, `Hackathon.zip` and the organiser artefact
 folders. Never commit downloaded data, trained models, recordings or renders.

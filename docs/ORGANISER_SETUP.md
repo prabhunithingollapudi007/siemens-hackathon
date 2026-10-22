@@ -249,3 +249,46 @@ print([n for n in z.namelist() if n.endswith(".md")])             # list
 print(z.read("Hackathon/HCMR-EV-RL/configs/online_rl.json").decode())  # read one file
 z.extract("Hackathon/HCMR-EV-RL/runs/<run>/final-model.zip", "Hackathon_extract")  # extract one file
 ```
+
+## 11. Running their stack on this laptop (Windows 11 + Docker Desktop)
+
+Status on 2026-10-22: the simulator, the control path and the browser physics run locally and were
+verified end to end. A 5 mm/s Twist on module 1 moved the Monadnock joint and the XPBD guidewire in
+the browser by the same distance (+34.6 mm robot, +33 mm browser). Their RL training and showcase modes
+go through the bash `./sys` script and still need Linux or a WSL Ubuntu; they are not set up yet.
+
+**Layout.** The repositories are extracted as siblings in `C:\Users\prabh\Documents\hackathon\HCMR-EV\`
+(source, Docker files and the Monadnock image archive; no build output, datasets or runs).
+
+**One command** (from this repo):
+
+```bash
+powershell -ExecutionPolicy Bypass -File tools\organiser_stack.ps1 start
+```
+
+`tools/organiser_stack.ps1` follows `HCMR-EV-Integration/HANDOFF.md`:
+
+1. It loads the Monadnock image and builds `hcmr/openng3-bridge:dev` (5.7 GB) and the two EndoNav images (1.3 GB each) when they are missing.
+2. It starts `ros2-bridge`, `noise-injection`, `openng3-sim` and `monadnock-sim`.
+3. It compiles `bridge` with colcon and launches `full_system.launch.py` headless.
+4. It re-zeroes the EndoNav follower, serves the pages on ports 8000, 8001 and 8002 (scenario files), and opens the physics page.
+
+Other commands: `status`, `test` (5 mm/s on module 1), `rebaseline`, `stop`.
+
+After `start`, load the scenario in the physics page with **Load .obj mesh…** and **Load goal.txt**, from
+`HCMR-EV\HCMR-EV-RL\scenarios\cas-reference\`. Keep that page open and visible: the physics runs in it,
+and a hidden or throttled tab slows the simulation. Open only one physics page at a time.
+
+**Problems found and how they were fixed**
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Docker Desktop would not start (`sailor-ingest.sock … cannot be accessed`) | stale socket stubs from crashes in Docker's runtime folder | moved `%LOCALAPPDATA%\Docker\run` aside (`run.stale-20261022`); Docker recreates it |
+| First image build aborted | Docker Desktop auto-updated (29.7.2 → 29.9.2) and restarted mid-build | rebuilt; avoid updating Docker during builds |
+| `udp_to_ros_node: received 126 bytes, expected 66` flood, no joint feedback | the Monadnock tar in the zip is a legacy 4-module build; the current OpenNG3 bridge only accepts 2 modules | run it with `SIM_MODULE_COUNT=2` (`HCMR-EV\docker-compose.local-2module.yml`, created by the script). The proper fix is the organiser's current `monadnock-model-linux-amd64.tar`, which was not included |
+| Browser devices pinned at ~1140/840 mm, not following commands | the follower latched its zero before valid joint feedback arrived, so it sent absolute positions | re-zero it via `/endovascular/follower/enabled` (false, then true), then reload the page. Their reset coordinator normally does this |
+| `ros2 topic echo` shows "A message was lost" or nothing | `/ng3/joint_states` runs at about 2 kHz, and cross-container matching takes a few seconds | use `--qos-reliability best_effort` and windows of at least 10 s |
+
+**Not done yet:** `./sys startup --mode rl|showcase|vla` (needs a Linux shell with Docker, i.e. a WSL Ubuntu
+with Docker Desktop's WSL integration, plus their RL image with CUDA PyTorch), the reset coordinator,
+and the LeRobot recorder.
