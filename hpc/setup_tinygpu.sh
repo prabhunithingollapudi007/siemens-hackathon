@@ -12,6 +12,9 @@
 # and fetches the default anatomy. Compute nodes have no direct internet, so the
 # NHR proxy is exported before pip runs. Everything is idempotent.
 #
+# Frontend processes are killed after 1 h of CPU time; the pip install and the anatomy
+# build each take a few minutes, so that is fine, but use the interactive job if in doubt.
+#
 # Variables you may override:
 #     VENV         venv path            (default $WORK/venvs/stroke-nav)
 #     TORCH_INDEX  PyTorch wheel index  (default cu130, as the organiser uses)
@@ -29,7 +32,7 @@ export https_proxy=http://proxy.nhr.fau.de:80
 
 echo "== modules"
 module load python
-module load cuda
+module load cuda 2>/dev/null || true     # optional: pip's torch wheel ships its own CUDA runtime
 module list 2>&1 | sed 's/^/   /'
 
 echo "== venv at $VENV"
@@ -44,7 +47,7 @@ echo "== PyTorch 2.14.1 from $TORCH_INDEX"
 pip install --quiet "torch==2.14.1" --index-url "$TORCH_INDEX"
 
 echo "== stroke-nav (editable) from $REPO"
-pip install --quiet -e "$REPO[dev]"
+pip install --quiet -e "$REPO[viz,dev]"      # viz: pyvista/vtk for the fluoro renderer (headless is fine)
 
 echo "== anatomy $MODEL"
 cd "$REPO"

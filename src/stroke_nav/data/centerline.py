@@ -100,7 +100,7 @@ class CenterlineGraph:
             branch_names=[str(s) for s in z["branch_names"]],
             edges=z["edges"],
             radius=z["radius"].astype(np.float64),
-            meta=json.loads(str(z["meta"])),
+            meta=_portable_meta(json.loads(str(z["meta"]))),
         )
 
 
@@ -439,7 +439,7 @@ def build_model(
                           f"starting {occ['from_mm']} mm along the branch")
         except Exception as e:  # pragma: no cover - depends on VTK install
             warnings.warn(f"radius computation failed ({e}); radius left as NaN")
-    graph.meta["surface_file"] = str(vtps[0]) if vtps else None
+    graph.meta["surface_file"] = Path(vtps[0]).as_posix() if vtps else None  # portable across OSes
 
     out = graph.save(processed_path(model, variant or graph.meta.get("surface", "")[:-4] or None, processed_dir))
     if verbose:
@@ -457,3 +457,10 @@ def build_model(
                   f"raw inside fraction {graph.meta.get('inside_fraction_raw')}")
         print(f"[build] saved {out}")
     return graph
+
+
+def _portable_meta(meta: dict) -> dict:
+    """Graphs built on Windows store ``surface_file`` with backslashes; make it usable on Linux too."""
+    if isinstance(meta.get("surface_file"), str):
+        meta["surface_file"] = meta["surface_file"].replace("\\", "/")
+    return meta
