@@ -5,9 +5,11 @@
 
 .DESCRIPTION
   Commands:
-    start       build images if missing, start containers, compile + launch OpenNG3's ROS graph,
-                re-zero the EndoNav follower, serve the web pages and open the physics page
-    status      containers, joint feedback and the latest guidewire setpoint
+    start       build images if missing, start containers (plus their reset coordinator), compile +
+                launch OpenNG3's ROS graph, re-zero the EndoNav follower, serve the web pages and run
+                the physics page in headless Chrome (-Visible: in a normal window instead)
+    status      containers, joint feedback, the latest guidewire setpoint and the physics page
+    reset       their coordinated episode reset (/hcmr/episode/reset): robot home, page and noise reset
     test        send 5 mm/s to module 1 (guidewire) for ~4 s and report the robot motion
     rebaseline  re-zero the EndoNav follower (needed after Monadnock restarts); reload the page after
     stop        stop the containers and the local page servers (images are kept)
@@ -19,15 +21,22 @@
   Local fix applied: the Monadnock image shipped in Hackathon.zip defaults to 4 modules
   (126-byte UDP feedback) while the current OpenNG3 bridge accepts only 2 (66 bytes). The script
   runs it with SIM_MODULE_COUNT=2 through docker-compose.local-2module.yml in -Root.
+  The extracted web\meshes entries are git symlink placeholders (text files) on Windows; the script
+  replaces them with directory junctions to HCMR-EndoNavSimDocker\meshes so the page finds its scenario.
+
+  Keep exactly one physics page connected. A second one (for example a background browser tab) also
+  publishes device states and corrupts measurements. The probe and relay lock onto the page that
+  restarted at the last reset, but closing extra tabs is the real fix.
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File tools\organiser_stack.ps1 start
 #>
 param(
-    [Parameter(Position = 0)][ValidateSet("start", "status", "test", "rebaseline", "stop")][string]$Command = "status",
+    [Parameter(Position = 0)][ValidateSet("start", "status", "test", "reset", "rebaseline", "stop")][string]$Command = "status",
     [string]$Root = "",
     [string]$Python = "",
-    [switch]$NoBrowser
+    [switch]$NoBrowser,
+    [switch]$Visible
 )
 $ErrorActionPreference = "Stop"
 $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
@@ -44,6 +53,8 @@ $Override = Join-Path $Root "docker-compose.local-2module.yml"
 $Bridge = "hcmr-endonavsimdocker-ros2-bridge-1"
 $RosSrc = "source /opt/ros/jazzy/setup.bash; export ROS_DOMAIN_ID=42"
 if (-not $Python) { $Python = (Get-Command python -ErrorAction SilentlyContinue).Source }
+$RepoRoot = Split-Path $ScriptDir -Parent
+$RepoPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
 
 foreach ($p in @($OpenNG3, $Endo, $Integration)) { if (-not (Test-Path $p)) { throw "missing $p (extract the organiser repositories into $Root)" } }
 if (-not (Test-Path $Override)) {
@@ -57,6 +68,21 @@ function Set-OpenNG3Env {
     $env:HOME = $HOME; $env:ROS2WS_PATH = $OpenNG3; $env:HCMR_INTEGRATION_NETWORK = "hcmr-ev-integration"
     $env:COMPOSE_NETWORK_NAME = "ros-control-net"; $env:CONTROL_NET_SUBNET = "172.30.0.0/16"; $env:CONTROL_NET_GATEWAY = "172.30.0.1"
     $env:ROS_DOMAIN_ID = "42"; $env:STEVE_CMD = "true"; $env:PHILLIP_CMD = "true"
+}
+function Repair-MeshLinks {
+    foreach ($web in @((Join-Path $Endo "src\catforce_ros_bridge\web\meshes"), (Join-Path $Endo "src\sensor_sim\web\meshes"))) {
+        $item = Get-Item $web -ErrorAction SilentlyContinue
+        if ($item -and -not $item.PSIsContainer -and $item.Length -lt 100) {
+            Remove-Item $web  # git symlink placeholder (contains "../../../meshes")
+            New-Item -ItemType Junction -Path $web -Target (Join-Path $Endo "meshes") | Out-Null
+            "  $web -> junction to meshes"
+        }
+    }
+}
+function Start-PhysicsPage([bool]$Headless) {
+    if (-not (Test-Path $RepoPython)) { "  repo venv not found ($RepoPython); open http://localhost:8000/catheter_guidewire_ros2.html yourself"; return }
+    $flag = if ($Headless) { "True" } else { "False" }
+    & $RepoPython -c "import sys; sys.path.insert(0, r'$RepoRoot\src'); from stroke_nav.organiser.live.renderer import PhysicsPage; print('  physics page:', PhysicsPage().start(headless=$flag).state()['mesh_info'])"
 }
 function Invoke-EndoCompose { docker compose --project-directory $Endo -f (Join-Path $Endo "docker-compose.yml") -f (Join-Path $Endo "docker-compose.integration.yml") @args }
 function Invoke-OpenNG3Compose {
@@ -107,8 +133,10 @@ switch ($Command) {
             docker network create hcmr-ev-integration | Out-Null
         }
         "== containers"
+        Repair-MeshLinks
         Invoke-EndoCompose up --no-build -d ros2-bridge noise-injection
         Invoke-OpenNG3Compose up --no-build -d openng3-sim monadnock-sim
+        docker compose -f (Join-Path $Integration "docker-compose.reset.yml") up -d --build
         "== OpenNG3 build + launch"
         Invoke-InContainer "openng3-sim" @"
 $RosSrc
@@ -126,10 +154,11 @@ if pgrep -f "ros2 launch bridge full_system.launch.py" > /dev/null; then echo " 
         Start-PageServer 8001 (Join-Path $Endo "src\sensor_sim\web")
         $cors = Join-Path $ScriptDir "cors_static_server.py"
         Start-PageServer 8002 $Scenario $cors
-        "Physics page:   http://localhost:8000/catheter_guidewire_ros2.html  (keep it open, visible)"
-        "Noisy viewer:   http://localhost:8001/noisy_visualization_ros2.html"
-        "Scenario files: http://localhost:8002/vessel.obj and /goals.txt  (or load them with the page's buttons from $Scenario)"
-        if (-not $NoBrowser) { Start-Process "http://localhost:8000/catheter_guidewire_ros2.html" }
+        "== physics page (loads the cas-reference scenario by default)"
+        if (-not $NoBrowser) { Start-PhysicsPage (-not $Visible) }
+        "Noisy viewer:   http://localhost:8001/noisy_visualization_ros2.html  (view only; does not run physics)"
+        "Scenario files: http://localhost:8002/vessel.obj and /goals.txt"
+        "Do not open catheter_guidewire_ros2.html in another browser tab: a second physics page also publishes."
     }
     "status" {
         "== containers"; docker ps -a --filter "name=openng3-sim" --filter "name=monadnock-sim" --filter "name=hcmr-endonavsimdocker" --format "{{.Names}}  {{.Status}}"
@@ -141,6 +170,9 @@ echo "  joint positions [m, rad]: `$(timeout 15 ros2 topic echo /ng3/joint_state
 echo "  guidewire setpoint [mm]:  `$(timeout 15 ros2 topic echo /endovascular/guidewire/command --once --qos-reliability best_effort --field insertion_setpoint 2>/dev/null | grep -v -e lost -e 'total count' -e '^---' | head -1)"
 "@
         foreach ($p in 8000, 8001, 8002) { "  page server :$p running: $(Test-Port $p)" }
+        $conns = Get-NetTCPConnection -State Established -RemotePort 18765 -ErrorAction SilentlyContinue
+        $owners = @($conns | ForEach-Object { (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName } | Select-Object -Unique)
+        "  browsers connected to the physics bridge: $($conns.Count) page(s) from $($owners -join ', ')  (should be 1)"
     }
     "test" {
         Invoke-InContainer "openng3-sim" @"
@@ -152,10 +184,17 @@ timeout 1.5 ros2 topic pub -r 20 /control/rqt/module_1/cmd_vel geometry_msgs/msg
 echo "  after:  `$(pos)   (module 1 should have advanced by roughly 10-30 mm)"
 "@
     }
+    "reset" {
+        Invoke-InContainer $Bridge @"
+$RosSrc
+timeout 40 ros2 service call /hcmr/episode/reset std_srvs/srv/Trigger '{}' 2>&1 | grep -o "message='[^']*'"
+"@
+    }
     "rebaseline" { Invoke-InContainer $Bridge $ReBaseline; "Reload the physics page now so both rods restart from zero." }
     "stop" {
         Invoke-OpenNG3Compose stop openng3-sim monadnock-sim
         Invoke-EndoCompose stop ros2-bridge noise-injection
+        docker stop hcmr-reset-coordinator 2>$null | Out-Null
         Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -match "http\.server 800[01]|cors_static_server\.py" } |
             ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
         "Stopped containers and page servers (images and the hcmr-ev-integration network are kept)."

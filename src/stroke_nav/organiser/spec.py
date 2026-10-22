@@ -152,6 +152,21 @@ class NoiseSpec:
     force_dropout_probability: float = 0.0
 
 
+@dataclass(frozen=True)
+class RobotSpec:
+    """Monadnock robot limits measured on their stack (2026-10-22, scripts/measure_gap.py).
+
+    Module 1 (guidewire) starts at 1.200 m and stops at 1.4645 m; module 2 (catheter) starts at
+    0.900 m and must stay 70.8 mm behind module 1. The EndoNav follower maps joint travel 1:1 onto
+    device insertion, so these are insertion limits from the reset position.
+    """
+
+    guidewire_travel_mm: float = 264.5
+    catheter_lead_max_mm: float = 229.2  # catheter insertion <= guidewire insertion + this
+    guidewire_lag_mm: float = 5.0  # measured mean lag of their rod behind the commanded insertion
+    catheter_lag_mm: float = 1.5
+
+
 IMAGE_SHAPE = (1, 128, 128)
 OBS_CLIP = 10.0
 STATE_SIZE = 43  # 2 x (pose 7 + aux 11) + goal delta 3 + previous action 4
@@ -164,6 +179,7 @@ class OrganiserSpec:
     reward: RewardSpec = field(default_factory=RewardSpec)
     training: TrainingSpec = field(default_factory=TrainingSpec)
     noise: NoiseSpec = field(default_factory=NoiseSpec)
+    robot: RobotSpec = field(default_factory=RobotSpec)
     device_controls: dict = field(default_factory=lambda: dict(DEFAULT_DEVICE_CONTROLS))
     scenario_name: str = "cas-reference"
     goals_file: str = "goals.json"
@@ -200,6 +216,19 @@ class OrganiserSpec:
 
     def with_training(self, **overrides) -> "OrganiserSpec":
         return replace(self, training=replace(self.training, **overrides))
+
+
+ORGANISER_DEVICE_PARAMETERS_HASH = "38b1ea532f0a929ed5d36111e2e0f0efb28ca1610a40ade0bccc987813a65fbc"
+
+
+def load_device_parameters(path: str | Path, spec: "OrganiserSpec | None" = None) -> "OrganiserSpec":
+    """Spec with device controls from a ``device-parameters.json`` (the physics page's settings).
+
+    The guidewire and catheter geometry (diameter, length, tip length and angle) used by our
+    simulator, planner and follower all derive from these controls.
+    """
+    doc = validate_device_parameters(json.loads(Path(path).read_text(encoding="utf-8")))
+    return replace(spec or OrganiserSpec(), device_controls=doc["controls"])
 
 
 def load_from_repo(hcmr_ev_rl_dir: str | Path, run_id: str | None = None) -> OrganiserSpec:

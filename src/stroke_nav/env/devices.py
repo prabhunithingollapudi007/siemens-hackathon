@@ -58,6 +58,7 @@ class SimParams:
     lookahead_nodes: int = 5
     max_insertion_mm: float = 1500.0
     initial_insertion_mm: tuple[float, float] = (20.0, 15.0)  # (wire, catheter)
+    tip_offset_frac: float = 0.7  # bent tip end stays within this fraction of the vessel radius from the centerline
     enforce_lumen: bool = True  # a device cannot enter lumen narrower than its clearance needs
 
     def device(self, i: int) -> DeviceParams:
@@ -306,12 +307,23 @@ class TrackSim:
         return d / np.linalg.norm(d)
 
     def tracking_points(self, device: int, spacing: float = 2.0) -> np.ndarray:
-        """Three points along the device tip (stEVE-style): bent tip end, bend start, one more back."""
+        """Three points along the device tip (stEVE-style): bent tip end, bend start, one more back.
+
+        The bent tip lies inside the lumen: its end sits at the device's arc position, displaced
+        sideways towards the bend by at most ``tip_offset_frac`` of the local vessel radius (a long
+        J-tip is pressed against the wall rather than sticking out of the vessel).
+        """
         tl = self.p.device(device).tip_length_mm
-        s_b = self.L[device] - tl
-        bend_start = self.position_at(s_b)
-        tip_end = bend_start + tl * self.tip_direction(device)
-        return np.stack([tip_end, bend_start, self.position_at(s_b - spacing)])
+        L = self.L[device]
+        d = self.tip_direction(device)
+        t, _, _ = self.frame_at(L)
+        lat = d - np.dot(d, t) * t
+        n = np.linalg.norm(lat)
+        r = float(self.anat.radius[self.node_at(L)])
+        off = min(tl * n, self.p.tip_offset_frac * r)
+        tip_end = self.position_at(L) + (off * lat / n if n > 1e-9 else 0.0)
+        s_b = L - tl
+        return np.stack([tip_end, self.position_at(s_b), self.position_at(s_b - spacing)])
 
     def device_polyline(self, device: int, step_mm: float = 2.0) -> np.ndarray:
         """Points along the inserted part of a device, for drawing (includes the bent tip)."""

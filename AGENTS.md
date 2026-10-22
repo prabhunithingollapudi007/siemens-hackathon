@@ -22,12 +22,14 @@ patient vessel models from the Vascular Model Repository (VMR). It contains:
 | `src/stroke_nav/data/` | VMR download (`fetch.py`, HTTP range requests), centerline graph and lumen radius (`centerline.py`), queries and target specs (`anatomy.py`) |
 | `src/stroke_nav/env/` | kinematic two-device simulator (`devices.py`) and `VesselNavEnv` (`vessel_env.py`) |
 | `src/stroke_nav/planning/` | device limits and curvature (`constraints.py`), constrained A\* (`planner.py`), speed profile, roll schedule and joint trajectory (`trajectory.py`) |
-| `src/stroke_nav/agents/` | `ScriptedOracle`, `RandomAgent`, `TrajectoryFollower` |
+| `src/stroke_nav/agents/` | `ScriptedOracle`, `RandomAgent`, `TrajectoryFollower`, `ClosedLoopRouteFollower` (A\* route driven only by measured tip pose; runs on both simulators) |
 | `src/stroke_nav/eval/` | START metrics and tables |
 | `src/stroke_nav/viz/` | pyvista scene for the playground and renders |
-| `src/stroke_nav/organiser/` | organiser compatibility: spec, frame transform, fluoro image, `OrganiserCompatEnv`, run-folder export, ROS 2 templates |
+| `src/stroke_nav/organiser/` | organiser compatibility: spec (device parameters, measured robot limits), frame transform, fluoro image, `OrganiserCompatEnv`, run-folder export, ROS 2 templates |
+| `src/stroke_nav/organiser/live/` | their live stack: headless physics page (`renderer.py`), open-loop probe (`probe.py` + `probe_ros.py`), closed-loop bridge (`bridge.py` + `relay_ros.py`); the `*_ros.py` files run inside their container and must stay self-contained |
 | `compat/openng3_rl/` | stand-in for the organiser's `openng3_rl.policy.FluoroStateExtractor` (see invariants) |
-| `scripts/` | command-line entry points (fetch, plot, playground, plan, evaluate, compare, train, check, export) |
+| `scripts/` | command-line entry points (fetch, plot, playground, plan, evaluate, compare, train, check, export, `measure_gap`, `run_astar`) |
+| `device-parameters.json` | the physics page's device settings (organiser schema); `run_astar.py` reads it by default |
 | `tests/` | pytest suite, mostly on synthetic vessel trees |
 | `docs/` | organiser reference and hand-over guide |
 | `tools/` | `organiser_stack.ps1`: start, stop and check the organiser's own stack locally (Docker Desktop); see docs/ORGANISER_SETUP.md §11 |
@@ -51,13 +53,15 @@ py -3.12 -m venv --system-site-packages .venv
 ## Commands
 
 ```bash
-.venv\Scripts\python.exe -m pytest -q                                   # full suite (46 tests), about 20 s
+.venv\Scripts\python.exe -m pytest -q                                   # full suite (52 tests), about 1 min
 .venv\Scripts\python.exe scripts/playground.py --model 0248_H_AOCERE_CAS   # interactive 3D window
 .venv\Scripts\python.exe scripts/plan_path.py --target right_carotid@-5 --follow 20 --record
 .venv\Scripts\python.exe scripts/evaluate.py --policies oracle,random,forward --episodes 50
 .venv\Scripts\python.exe scripts/train_sac.py --total-timesteps 50000 --device cuda
 .venv\Scripts\python.exe scripts/check_handover.py --run-dir runs/<run_id>
 .venv\Scripts\python.exe scripts/export_handover.py --run-dir runs/<run_id> --plan-target right_carotid_external@21
+.venv\Scripts\python.exe scripts/run_astar.py --target right_carotid@40 --sim ours          # closed-loop A* (--sim theirs: live stack)
+.venv\Scripts\python.exe scripts/measure_gap.py                                        # ours vs their physics (live stack needed)
 ```
 
 - **Off-screen rendering** works with pyvista (`--record`). Interactive windows need a desktop session.
@@ -91,6 +95,8 @@ py -3.12 -m venv --system-site-packages .venv
 
 - **Playground timers on Windows:** a pyvista/VTK timer created before the window exists never fires. `scripts/playground.py` therefore opens the window first (`pl.show(interactive_update=True, auto_close=False)`), then adds the timer, then calls `pl.iren.start()`. Keep that order.
 - **Interactive rendering is slow** (around 1 frame/s while GPU training runs). The autopilot steps the simulation at real-time pace and draws once per frame, and `Scene.update` updates actors in place. Don't go back to recreating actors every frame.
+- **Their live stack accepts one physics page.** The bridge's command node sends commands only to the newest browser connection, so a second `catheter_guidewire_ros2.html` tab steals control and also publishes its own states. `organiser_stack.ps1 status` counts connected pages; close extras.
+- **Their robot's travel is limited:** guidewire 264.5 mm, catheter at most 229.2 mm ahead of the wire (`RobotSpec`). The cas-reference goal is 288 mm along the vessels, so it is out of reach as configured.
 - **The simulator is kinematic.** Devices ride the centerlines, and roll picks the branch at bifurcations. There are no wall forces, so contact force reports n/a and path-following error is 0. Policies trained here need fine-tuning in the organiser's rod-physics simulator.
 - **Junction gaps:** some VMR models (e.g. `0024_H_AO_H`) attach branches through long straight junction edges, because a branch centerline starts inside its parent. Code that measures distance to a planned path must densify it first (see `agents/follower.py`).
 - **TinyGPU cluster jobs** (`hpc/`): Slurm rejects scripts with CRLF line endings, so keep `hpc/*.sh` and `*.sbatch` LF (`.gitattributes` enforces it; check with `tr -cd '\r' < file | wc -c` after editing on Windows). TinyGPU also rejects `--mem` on GPU jobs. Paths stored in `data/processed/*.npz` must stay POSIX-style so data built on Windows loads on Linux.

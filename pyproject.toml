@@ -25,6 +25,7 @@ dependencies = [
 [project.optional-dependencies]
 viz = ["pyvista", "vtk", "imageio", "imageio-ffmpeg"]
 dev = ["pytest", "pyarrow", "pandas"]
+live = ["websocket-client==1.8.0"]  # headless physics page control (stroke_nav.organiser.live.renderer)
 
 [tool.setuptools.packages.find]
 where = ["src"]

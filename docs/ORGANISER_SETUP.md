@@ -275,9 +275,18 @@ powershell -ExecutionPolicy Bypass -File tools\organiser_stack.ps1 start
 
 Other commands: `status`, `test` (5 mm/s on module 1), `rebaseline`, `stop`.
 
-After `start`, load the scenario in the physics page with **Load .obj mesh…** and **Load goal.txt**, from
-`HCMR-EV\HCMR-EV-RL\scenarios\cas-reference\`. Keep that page open and visible: the physics runs in it,
-and a hidden or throttled tab slows the simulation. Open only one physics page at a time.
+`start` now also starts their reset coordinator (`/hcmr/episode/reset`, from `HCMR-EV-Integration`)
+and runs the physics page in headless Chrome with the flags of their RL renderer
+(`stroke_nav.organiser.live.renderer.PhysicsPage`). Without a `scenario_url` the page loads the
+cas-reference scenario by itself (`meshes/Mesh_1`). `reset` calls the coordinated reset.
+
+**Only one physics page may be open.** The bridge's command node sends commands to the newest
+browser connection only (`simulation_command_node.py` keeps a single websocket). A second tab with
+`catheter_guidewire_ros2.html`, for example one opened earlier in Edge, takes over the commands
+whenever it reconnects, and it also publishes its own device states. `status` lists how many pages
+are connected; close any extra tab. The probe and the relay lock onto the page that restarted at the
+last reset, and `scripts/run_astar.py` reloads the headless page before each episode and stops if the
+page no longer follows the robot.
 
 **Problems found and how they were fixed**
 
@@ -289,6 +298,51 @@ and a hidden or throttled tab slows the simulation. Open only one physics page a
 | Browser devices pinned at ~1140/840 mm, not following commands | the follower latched its zero before valid joint feedback arrived, so it sent absolute positions | re-zero it via `/endovascular/follower/enabled` (false, then true), then reload the page. Their reset coordinator normally does this |
 | `ros2 topic echo` shows "A message was lost" or nothing | `/ng3/joint_states` runs at about 2 kHz, and cross-container matching takes a few seconds | use `--qos-reliability best_effort` and windows of at least 10 s |
 
+| Physics page could not load its mesh (404) | `web/meshes` in the extract are git symlink placeholders (text files) on Windows | `start` replaces them with directory junctions to `HCMR-EndoNavSimDocker\meshes` |
+| Physics stalls when the page is not in front | the XPBD loop runs on `requestAnimationFrame`, which browsers pause in hidden tabs | run it headless with throttling disabled (`PhysicsPage`) |
+| Devices stop following mid-run although the robot moves | a second page took the bridge's single command connection | close the other tab; see above |
+
 **Not done yet:** `./sys startup --mode rl|showcase|vla` (needs a Linux shell with Docker, i.e. a WSL Ubuntu
-with Docker Desktop's WSL integration, plus their RL image with CUDA PyTorch), the reset coordinator,
-and the LeRobot recorder.
+with Docker Desktop's WSL integration, plus their RL image with CUDA PyTorch) and the LeRobot recorder.
+
+## 12. Our simulator vs theirs (measured 2026-10-22)
+
+`scripts/measure_gap.py` plays the same actions in both simulators (their side through
+`stroke_nav.organiser.live.probe`, which runs a ROS 2 script in the bridge container) and writes
+`results/gap/report.md` with plots. `--sweep` adds the roll-to-branch sweep.
+
+| Quantity | Theirs (XPBD rods) | Ours (kinematic) |
+|---|---|---|
+| Insertion vs command | follows, guidewire 5-8 mm behind, catheter 1-2 mm | exact |
+| Guidewire travel | stops at 264.5 mm (module 1 from 1.200 to 1.4645 m) | now limited the same way (`RobotSpec`) |
+| Catheter travel | module 2 stays 70.8 mm behind module 1, so catheter insertion <= wire + 229.2 mm | now limited the same way |
+| Tip position | 2-5 mm off the centerline, against the wall | tip end kept within 0.7 x radius (was a rigid 30 mm segment) |
+| Branch at the arch with roll 0 | left subclavian, then left vertebral | left carotid |
+| Roll response | follows the command, with sudden whips of up to ~120 deg as stored twist releases | exact |
+| Contact force | below 0.01 N in all runs | none |
+| Simulated time | about 0.4 x real time in headless Chrome | n/a |
+
+Roll sweep on their side (wire turned at the entry, then pushed 260 mm): 0-30 deg reaches the left
+subclavian and vertebral; 60-120 deg the right carotid side (90-120 deg into the right external
+carotid); 150 deg the right subclavian; 180-330 deg the left carotid or vertebral.
+
+**Reachability.** The scenario goal (right external carotid, 21 mm in) is 288 mm along the vessels
+from the entry. With 264.5 mm of guidewire travel the tip can get no closer than about 22 mm, so the
+cas-reference goal cannot be reached with the robot as configured. Every target in the right external
+carotid is out of reach (277 mm or more). Worth raising with the organisers.
+
+## 13. A* on both simulators
+
+`scripts/run_astar.py` plans a route with `PathPlanner` and drives it with
+`stroke_nav.agents.route_follower.ClosedLoopRouteFollower`, which uses only the measured tip
+position and tip direction: it rotates the wire until its bend points into the planned child vessel,
+retracts and retries with another roll offset when the tip enters the wrong vessel, keeps the catheter
+40 mm behind and stops at the goal. `--sim ours` runs our simulator, `--sim theirs` runs their live
+stack through `stroke_nav.organiser.live.bridge.LiveBridge` (a JSON-lines relay into the bridge
+container). Device geometry comes from `device-parameters.json`.
+
+Status: on our simulator with the organiser's device parameters, 6 of 8 targets succeed (left
+carotid targets fail on a false wrong-vessel alarm in the crowded arch). On their simulator a first run
+to the right subclavian passed two of three bifurcations before the 600-step limit, slowed by the
+second browser tab taking the command channel. Open-loop replay of our planned trajectory does not
+work there: their rod picks different branches than our tip model.
