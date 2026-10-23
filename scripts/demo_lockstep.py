@@ -10,6 +10,7 @@ distance to the goal and the action.
     python scripts/demo_lockstep.py --record results/demo_bc_policy.mp4
     python scripts/demo_lockstep.py --expert --headless --record results/demo_expert.mp4
     python scripts/demo_lockstep.py --model runs/stroke-nav-bc-multi/final-model.zip         --goals results/lockstep/goals.json --goal-id 92        # one goal of a make_goals.py set
+    python scripts/demo_lockstep.py --variant 10Right70Left --target left_carotid@140 --expert --slow-radius 8 \n        --record results/astar_demo/10Right70Left_left_carotid_at_140.mp4   # a stenosis variant as their scenario; A* route + calibrated entry roll
 
 With ``--goals`` the physics view shows the episode's goal (loaded through the page's own goal-file
 input); their fluoro viewer, the policy's input, still shows the scenario's goal marker, as in their
@@ -84,9 +85,42 @@ def main() -> None:
     ap.add_argument("--goals", default=None, help="goal set from scripts/make_goals.py")
     ap.add_argument("--goal-id", type=int, default=None, help="goal id in --goals (default: the cas-reference goal)")
     ap.add_argument("--slow-radius", type=float, default=25.0, help="expert slow-down distance (mm)")
+    ap.add_argument("--variant", default=None, help="0248 stenosis variant: run on its mesh as their scenario (stroke_nav.organiser.scenario)")
+    ap.add_argument("--target", default=None, help="target spec (branch@mm, xyz:...) on the variant; the entry roll comes from the calibrated table")
+    ap.add_argument("--roll", type=float, default=None, help="entry roll for the expert (deg); default: the table's robust roll for --target")
+    ap.add_argument("--max-steps", type=int, default=None)
     args = ap.parse_args()
 
-    goal = None
+    env_kwargs, route_line = {}, None
+    if args.variant or args.target:
+        from stroke_nav.agents.roll_table import RollTable
+        from stroke_nav.data.anatomy import Anatomy
+        from stroke_nav.organiser.frame import default_frame
+        from stroke_nav.organiser.scenario import DEFAULT_SCENARIO_ROOT, scenario_name, write_scenario
+        from stroke_nav.planning.constraints import GUIDEWIRE
+        from stroke_nav.planning.planner import PathPlanner, PlannerWeights
+
+        model_name = "0248_H_AOCERE_CAS"
+        anat, frame = Anatomy.load(model_name, args.variant), default_frame()
+        node = anat.resolve(args.target or "right_carotid_external@21")
+        goal_vmr = anat.nodes[node]
+        plan = PathPlanner(anat, GUIDEWIRE, PlannerWeights.profile("balanced")).plan(anat.default_start(), node)
+        route_line = f"A* route: {' > '.join(plan.branches())} ({plan.length_mm:.0f} mm, ~{plan.costs['est_time_s']:.0f} s)" if plan.feasible else "A*: no route"
+        roll = args.roll
+        if roll is None:
+            files = [f for f in (ROOT / "results" / "lockstep" / "roll_sweep.json", ROOT / "results" / "lockstep" / "roll_sweep_neg.json") if f.exists()]
+            roll, miss = RollTable.load(",".join(map(str, files))).reach(frame.vmr_mm_to_world_m(goal_vmr), robust_within_mm=5.0)
+            print(f"entry roll {roll:g} deg from the calibrated table (recorded paths miss the target by {miss:.1f} mm)")
+        goal = {"id": 0, "split": args.variant or "base", "branch": anat.branch_of(node), "roll_deg": roll,
+                "goal_m": frame.vmr_mm_to_world_m(goal_vmr).tolist()}
+        if args.variant:
+            name = scenario_name(model_name, args.variant)
+            if not (Path(DEFAULT_SCENARIO_ROOT) / name / "scenario.json").is_file():
+                write_scenario(model_name, args.variant, [goal_vmr], DEFAULT_SCENARIO_ROOT, frame)
+            env_kwargs = {"scenario_name": name, "scenario_root": Path(DEFAULT_SCENARIO_ROOT)}
+
+    if not (args.variant or args.target):
+        goal = None
     if args.goals:
         goals = load_goal_set(args.goals, "train,test,cas")
         goal = next((g for g in goals if g["id"] == args.goal_id), None) if args.goal_id is not None else             next(g for g in goals if g["split"] == "cas")
@@ -94,13 +128,14 @@ def main() -> None:
             ap.error(f"no goal with id {args.goal_id} in {args.goals}")
     if args.expert:
         policy = EntryRollExpert(roll_deg=goal["roll_deg"] if goal else 120.0, slow_radius_mm=args.slow_radius)
-        name = "scripted expert (EntryRollExpert)"
+        name = "A* route + calibrated entry-roll controller" if (args.variant or args.target) else "scripted expert (EntryRollExpert)"
     else:
         ensure_policy_importable()
         from stable_baselines3 import SAC
 
         model, name = SAC.load(args.model, device="cpu"), f"BC policy {Path(args.model).parent.name}"
-    env = make_env(worker=0, seed=args.seed, visible=not args.headless, goals=[goal["goal_m"]] if goal else None)
+    env = make_env(worker=0, seed=args.seed, visible=not args.headless, goals=[goal["goal_m"]] if goal else None,
+                   max_steps=args.max_steps, **env_kwargs)
     bridge = env.bridge
     frames = []
     try:
@@ -121,8 +156,9 @@ def main() -> None:
             if done:
                 banner = (f"GOAL REACHED in {step / 5:.1f} s  ({dist:.1f} mm, within 5 mm for 3 steps)" if info["success"]
                           else f"episode ended: {info.get('reset_reason')}  ({dist:.1f} mm)")
-            target = f"goal {goal['id']} ({goal['split']}): {goal['branch']}" if goal else "goal: cas-reference"
-            lines = [name, target, f"step {step:3d}   simulated {step / 5:5.1f} s", f"distance to goal {dist:6.1f} mm",
+            target = (f"{args.variant or '0248'}: {args.target} ({goal['branch']}), entry roll {goal['roll_deg']:g} deg" if args.target or args.variant
+                      else f"goal {goal['id']} ({goal['split']}): {goal['branch']}" if goal else "goal: cas-reference")
+            lines = [name, target, *([route_line] if route_line else []), f"step {step:3d}   simulated {step / 5:5.1f} s", f"distance to goal {dist:6.1f} mm",
                      f"guidewire  in {ins:6.1f} mm  roll {rot:6.1f} deg",
                      f"action  v {act[0]:+.2f}  w {act[1]:+.2f}  (catheter {act[2]:+.2f})",
                      f"peak force {bridge.latest_true().peak_force:.3f} N"]

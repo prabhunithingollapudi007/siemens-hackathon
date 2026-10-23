@@ -65,15 +65,42 @@ class RollTable:
         goal = np.asarray(goal_m, dtype=float)
         return max(path_distance_m(p.tip_m, goal) for p in self.paths if p.roll_deg == roll_deg) * 1000.0
 
-    def reach(self, goal_m, prefer_small_within_mm: float | None = None) -> tuple[float, float]:
-        """(roll in degrees, worst-seed miss in mm) of the roll that reaches ``goal_m`` best, or of the
-        smallest |roll| that misses it by at most ``prefer_small_within_mm``."""
+    def reach(self, goal_m, prefer_small_within_mm: float | None = None,
+              robust_within_mm: float | None = None) -> tuple[float, float]:
+        """(roll in degrees, worst-seed miss in mm) of the roll that reaches ``goal_m`` best.
+
+        ``prefer_small_within_mm``: the smallest |roll| among those that miss by at most that much.
+        ``robust_within_mm``: the **centre** of the longest contiguous run of rolls (on the sweep's
+        grid) that miss by at most that much. Neighbouring rolls usually land in the same vessel, so
+        the run is the arc of rolls that works; its edges are where a slightly different executed
+        roll (noise, the robot's deadband) takes another branch. For the cas-reference goal the
+        closest roll was 150 deg (half the episodes failed), the arc centre 120 deg (all succeeded).
+        """
         misses = [(self.worst_mm(r, goal_m), r) for r in self.rolls]
         if prefer_small_within_mm is not None:
             ok = [(abs(r), m, r) for m, r in misses if m <= prefer_small_within_mm]
             if ok:
                 _, miss, roll = min(ok)
                 return roll, miss
+        if robust_within_mm is not None:
+            good = [m <= robust_within_mm for m, _ in misses]
+            if any(good):
+                n = len(good)
+                step = min(np.diff(self.rolls)) if n > 1 else 0.0
+                # runs over the sorted rolls, allowing a gap of one grid step and the wrap at +-180 / 360
+                best, run = [], []
+                for i in range(2 * n):
+                    k = i % n
+                    if good[k] and (not run or (i == run[-1] + 1 and
+                                                 (self.rolls[k] - self.rolls[run[-1] % n]) % 360.0 <= 1.5 * step + 1e-9)):
+                        run.append(i)
+                    else:
+                        run = [i] if good[k] else []
+                    if len(run) > len(best):
+                        best = list(run)
+                best = best[:n]
+                k = best[len(best) // 2] % n  # the middle of the arc (the later middle for even lengths)
+                return self.rolls[k], misses[k][0]
         miss, roll = min(misses)
         return roll, miss
 

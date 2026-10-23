@@ -63,6 +63,8 @@ def main() -> None:
     ap.add_argument("--learning-starts", type=int, default=1_000)
     ap.add_argument("--init-ent-coef", type=float, default=0.01)
     ap.add_argument("--checkpoint-every", type=int, default=2_000)
+    ap.add_argument("--max-minutes", type=float, default=None,
+                    help="stop learning after this much wall time (a training budget; --timesteps is then an upper bound)")
     ap.add_argument("--device", default="auto")
     ap.add_argument("--run-root", default="runs")
     ap.add_argument("--run-id", default=None)
@@ -70,7 +72,7 @@ def main() -> None:
 
     import torch
     from stable_baselines3 import SAC
-    from stable_baselines3.common.callbacks import CheckpointCallback
+    from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
     from stable_baselines3.common.vec_env import SubprocVecEnv
 
     from stroke_nav.agents.roll_table import load_goal_set
@@ -92,10 +94,17 @@ def main() -> None:
             model.log_ent_coef.fill_(math.log(args.init_ent_coef))
     model.tensorboard_log = str(run_dir / "tensorboard")
     t0 = time.time()
+
+    class TimeBudget(BaseCallback):
+        """Ends ``learn`` once the wall-time budget is spent (SB3 stops when a callback returns False)."""
+
+        def _on_step(self) -> bool:
+            return args.max_minutes is None or time.time() - t0 < 60.0 * args.max_minutes
+
     try:
         model.learn(total_timesteps=args.timesteps, reset_num_timesteps=True, log_interval=4,
-                    callback=CheckpointCallback(max(1, args.checkpoint_every // args.workers), str(run_dir / "checkpoints"),
-                                                name_prefix="sac"))
+                    callback=[CheckpointCallback(max(1, args.checkpoint_every // args.workers), str(run_dir / "checkpoints"),
+                                                 name_prefix="sac"), TimeBudget()])
     finally:
         model.save(run_dir / "final-model.zip")
         venv.close()

@@ -102,20 +102,31 @@ class _QuietHandler(SimpleHTTPRequestHandler):
 _SERVER_LOCK = threading.Lock()
 
 
+_ASSET_SERVERS: dict[int, tuple[str, str, object]] = {}  # asset port -> (scenario, root, server) started here
+
+
 def ensure_servers(ports: Ports = Ports(), scenario: str = "cas-reference",
-                   device_parameters: Path | None = None) -> Path:
+                   device_parameters: Path | None = None, scenario_root: Path | None = None) -> Path:
     """Serve both pages and their asset server in this process unless something already serves
-    them (e.g. the parent of a worker process). Returns the asset server's status file."""
+    them (e.g. the parent of a worker process). ``scenario`` is a folder under ``scenario_root``
+    (their ``HCMR-EV-RL/scenarios`` by default; ``stroke_nav.organiser.scenario`` writes others).
+    An asset server started here for another scenario is replaced. Returns the status file."""
     with _SERVER_LOCK:
-        return _ensure_servers(ports, scenario, device_parameters)
+        return _ensure_servers(ports, scenario, device_parameters, scenario_root)
 
 
-def _ensure_servers(ports: Ports, scenario: str, device_parameters: Path | None) -> Path:
+def _ensure_servers(ports: Ports, scenario: str, device_parameters: Path | None, scenario_root: Path | None = None) -> Path:
     status = REPO / "runs" / "live" / f"lockstep-runtime-{ports.asset}.json"
-    for port, root in ((ports.web, PHYSICS_WEB), (ports.web + 1, VIEWER_WEB)):
-        if not _serving(port, f"/{PHYSICS_HTML if root == PHYSICS_WEB else NOISY_HTML}"):
-            srv = ThreadingHTTPServer(("127.0.0.1", port), functools.partial(_QuietHandler, directory=str(root)))
+    root = str(Path(scenario_root).resolve() if scenario_root else (RL_ROOT / "scenarios").resolve())
+    for port, web in ((ports.web, PHYSICS_WEB), (ports.web + 1, VIEWER_WEB)):
+        if not _serving(port, f"/{PHYSICS_HTML if web == PHYSICS_WEB else NOISY_HTML}"):
+            srv = ThreadingHTTPServer(("127.0.0.1", port), functools.partial(_QuietHandler, directory=str(web)))
             threading.Thread(target=srv.serve_forever, daemon=True).start()
+    ours = _ASSET_SERVERS.get(ports.asset)
+    if ours is not None and (ours[0], ours[1]) != (scenario, root):
+        ours[2].shutdown()  # serving another scenario: the pages must load this one
+        ours[2].server_close()
+        del _ASSET_SERVERS[ports.asset]
     if not _serving(ports.asset, "/health"):
         asset = organiser_rl("asset_server")
         dp = organiser_rl("device_parameters")
@@ -135,9 +146,10 @@ def _ensure_servers(ports: Ports, scenario: str, device_parameters: Path | None)
                             raise
                         time.sleep(0.02)
 
-        runtime = Runtime(scenario, (RL_ROOT / "scenarios").resolve(), status, params, "training_run")
+        runtime = Runtime(scenario, Path(root), status, params, "training_run")
         srv = ThreadingHTTPServer(("127.0.0.1", ports.asset), asset._handler(runtime))
         threading.Thread(target=srv.serve_forever, daemon=True).start()
+        _ASSET_SERVERS[ports.asset] = (scenario, root, srv)
     return status
 
 
@@ -194,18 +206,28 @@ class LockstepPage:
             show = [f"--window-position={x},{y}", f"--window-size={w},{h}", "--new-window"]
         args = [_chrome(), *RENDERER_FLAGS, *show, f"--remote-debugging-port={self.debug_port}",
                 f"--user-data-dir={self.profile}", "about:blank"]
-        self.proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        deadline = time.monotonic() + timeout_s
-        target = None
-        while target is None:
-            if time.monotonic() > deadline:
-                raise TimeoutError(f"Chrome on debug port {self.debug_port} did not start")
-            try:
-                targets = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{self.debug_port}/json/list", timeout=2).read())
-                target = next((t for t in targets if t.get("type") == "page"), None)
-            except Exception:
-                time.sleep(0.3)
+        for attempt in range(2):
+            self.proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            deadline = time.monotonic() + timeout_s
+            target = None
+            while target is None:
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"Chrome on debug port {self.debug_port} did not start")
+                try:
+                    targets = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{self.debug_port}/json/list", timeout=2).read())
+                    target = next((t for t in targets if t.get("type") == "page"), None)
+                except Exception:
+                    time.sleep(0.3)
+            if os.name == "nt" and self.proc.poll() is not None and attempt == 0:
+                # our chrome.exe exited at once: a stale Chrome with this profile took the command line and
+                # serves the debug port (it dies seconds later). Kill it and start a fresh one.
+                pid = _pid_listening_on(self.debug_port)
+                if pid:
+                    subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
+                time.sleep(1.0)
+                continue
+            break
         self.cdp = Cdp(target["webSocketDebuggerUrl"])
         self.cdp.call("Page.enable")
         self.cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source": INIT_SCRIPT.read_text(encoding="utf-8")})
@@ -239,11 +261,33 @@ class LockstepPage:
     def close(self) -> None:
         if self.cdp is not None:
             self.cdp.close()
+        pids = set()
         if self.proc is not None and self.proc.poll() is None:
+            pids.add(self.proc.pid)
+        if os.name == "nt":
+            # If a Chrome with this profile was still alive at start, our chrome.exe only handed over its
+            # command line and exited; the browser that serves the debug port is then not our child.
+            pid = _pid_listening_on(self.debug_port)
+            if pid:
+                pids.add(pid)
+        for pid in pids:
             if os.name == "nt":  # Chrome's GPU and renderer children otherwise outlive it and keep the debug port
-                subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.proc.pid)], capture_output=True)
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
             else:
                 self.proc.kill()
+
+
+def _pid_listening_on(port: int) -> int | None:
+    """PID of the process listening on 127.0.0.1:``port`` (Windows ``netstat``), or None."""
+    try:
+        out = subprocess.run(["netstat", "-ano", "-p", "tcp"], capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 5 and parts[1].endswith(f":{port}") and parts[3].upper() == "LISTENING":
+            return int(parts[4])
+    return None
 
 
 def _mesh_ready_js(sockets: int) -> str:
@@ -407,9 +451,11 @@ class LockstepBridge:
     image_min_interval_s = 0.05  # noisy viewer: at most one image per 50 ms
 
     def __init__(self, worker: int = 0, seed: int = 0, ports: Ports = Ports(), robot: RobotModel = RobotModel(),
-                 noise: NoiseModel = NoiseModel(), timeout_s: float = 120.0, visible: bool = False):
+                 noise: NoiseModel = NoiseModel(), timeout_s: float = 120.0, visible: bool = False,
+                 scenario: str = "cas-reference", scenario_root: Path | None = None):
         self.ports = ports
-        self.status_file = ensure_servers(ports)
+        self.scenario = scenario
+        self.status_file = ensure_servers(ports, scenario, scenario_root=scenario_root)
         obs = organiser_rl("observation")
         self._NoisySample, self._TrueSample, self._Packet = obs.NoisySample, obs.TrueSample, obs.ObservationPacket
         self._image_shape = obs.IMAGE_SHAPE
@@ -622,6 +668,14 @@ class LockstepBridge:
                 break
             b64 = self.viewer.cdp.eval("__ls.render([])")
         if not b64:
+            # rarely (about 1 in 50 resets) the viewer sends nothing although it is healthy: start it
+            # afresh and replay this episode's messages so far
+            self.viewer.reload()
+            self.viewer.wait(_mesh_ready_js(1), self.timeout_s, "noisy viewer")
+            self.viewer.cdp.eval("__ls.frame(); true")
+            replay = [_viewer_message(d, n) for _, d, n in msgs]
+            b64 = self.viewer.cdp.eval(f"__ls.render({json.dumps(replay)})")
+        if not b64:
             v = self.viewer.cdp
             raise RuntimeError(f"noisy viewer did not produce an image: errors {v.eval('__ls.errors()')}, "
                                f"queued frames {v.eval('__ls.queued()')}, sockets {v.eval('__ls.connected()')}, "
@@ -665,24 +719,25 @@ class GoalSet:
 
 
 def make_env(worker: int = 0, seed: int = 0, goal_world_m=None, max_steps: int | None = None, visible: bool = False,
-             goals=None):
-    """Their ``OpenNG3Env`` on a ``LockstepBridge``. Goals: the cas-reference scenario's (their
+             goals=None, scenario_name: str = "cas-reference", scenario_root: Path | None = None):
+    """Their ``OpenNG3Env`` on a ``LockstepBridge``. Goals: the scenario's (their
     ``ScenarioGoalSampler``) unless ``goal_world_m`` or a list ``goals`` (world metres) is given; then
     ``env.goal_sampler`` is a ``GoalSet`` whose ``set_next`` picks the next episode's goal.
     Configuration as ``HCMR-EV-RL/configs/online_rl.json``. ``visible`` shows both pages in Chrome
-    windows instead of running them headless."""
+    windows instead of running them headless. ``scenario_name`` / ``scenario_root``: another mesh,
+    e.g. one written by ``stroke_nav.organiser.scenario.write_scenario`` for a stenosis variant."""
     env_mod, action, scenario = (organiser_rl(m) for m in ("env", "action", "scenario"))
     e = DEFAULT_SPEC.environment
     a = DEFAULT_SPEC.action
     # one asset server per worker: it holds a single "authoritative" page session, so workers sharing
     # one got each other's mesh-to-world transform (wrong goals, every episode failed)
     bridge = LockstepBridge(worker=worker, seed=seed, ports=Ports(web=8100 + 10 * worker, asset=8102 + 10 * worker),
-                            visible=visible)
+                            visible=visible, scenario=scenario_name, scenario_root=scenario_root)
     if goals is not None or goal_world_m is not None:
         sampler = GoalSet(goals if goals is not None else [goal_world_m])
     else:  # their training: ScenarioGoalSampler with the physics page's acknowledged transform
         auth = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{bridge.ports.asset}/authoritative", timeout=5).read())
-        sc = scenario.load_scenario(DEFAULT_SPEC.scenario_name, (RL_ROOT / "scenarios").resolve())
+        sc = scenario.load_scenario(scenario_name, Path(scenario_root).resolve() if scenario_root else (RL_ROOT / "scenarios").resolve())
         sampler = scenario.ScenarioGoalSampler(sc, np.asarray(auth["mesh_to_world"], dtype=float).reshape(4, 4))
     cfg = env_mod.EnvConfig(
         control_hz=e.control_hz, max_steps=max_steps or e.max_steps, success_radius_m=e.success_radius_m,
@@ -692,3 +747,55 @@ def make_env(worker: int = 0, seed: int = 0, goal_world_m=None, max_steps: int |
                                     max_rotation_rad_s=a.max_rotation_rad_s),
         reward_from_ground_truth=True)
     return env_mod.OpenNG3Env(bridge, cfg, sampler)
+
+
+def kill_stray_pages() -> int:
+    """Kill headless Chromes left behind by a crashed lockstep run (profiles under ``stroke-nav/lockstep``).
+
+    They keep the fixed debug ports (9330+), so the next run connects to a stale page. Only
+    processes whose command line names that profile folder are touched. Returns how many were killed.
+    """
+    if sys.platform != "win32":
+        return 0
+    # Wait until they are gone: a Chrome started while one with the same profile is still shutting
+    # down hands its command line to that instance and exits, and the page then dies seconds later.
+    ps = ("$f = { Get-CimInstance Win32_Process -Filter \"name='chrome.exe'\" | "
+          "Where-Object { $_.CommandLine -like '*stroke-nav*lockstep*' } }; "
+          "$p = @(& $f); $p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; "
+          "$i = 0; while ((@(& $f)).Count -gt 0 -and $i -lt 100) { Start-Sleep -Milliseconds 200; $i++ }; "
+          "if ($p.Count -gt 0) { Start-Sleep -Seconds 1 }; $p.Count")
+    out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True)
+    return int(out.stdout.strip() or 0)
+
+
+LOCKSTEP_SCRIPTS = ("record_demos", "eval_lockstep", "run_dagger", "calibrate_rolls", "demo_lockstep", "teleop_lockstep",
+                    "finetune_sac_lockstep", "measure_gap", "check_lockstep", "plan_case")
+
+
+def other_lockstep_jobs() -> list[str]:
+    """Command lines of other Python processes running a lockstep script of this repo.
+
+    All lockstep jobs share the worker ports (8100+, 8102+) and Chrome debug ports (9330+), and each
+    job's page cleanup kills the others' pages, so only one may run at a time, across terminals and
+    Claude sessions. Excludes this process and its parent (a venv ``python.exe`` launches the base
+    interpreter as a child).
+    """
+    if sys.platform != "win32":
+        return []
+    ps = ("Get-CimInstance Win32_Process -Filter \"name='python.exe'\" | "
+          "ForEach-Object { \"$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.CommandLine)\" }")
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    me = {os.getpid(), os.getppid()}
+    jobs = []
+    for line in out.splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) < 3:
+            continue
+        pid, ppid, cmd = int(parts[0]), int(parts[1]), parts[2]
+        if pid in me or ppid in me or not any(f"{s}.py" in cmd for s in LOCKSTEP_SCRIPTS):
+            continue
+        jobs.append(f"pid {pid}: {cmd[:160]}")
+    return jobs

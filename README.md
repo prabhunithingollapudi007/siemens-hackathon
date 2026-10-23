@@ -10,6 +10,9 @@ patient-specific vessel models toward a stroke target, along the mechanical-thro
 - START consensus metrics (Robertshaw et al., JAHA 2026) and a runtime safety monitor
 - a layer that reproduces the hackathon organiser's RL interface, plus a faster-than-real-time
   ("lockstep") env on the organiser's own physics, so what we train loads and runs in their stack
+- a pre-operative case planner: for one patient and one target, candidate trajectories from A\*, the
+  calibrated entry-roll controller, behaviour cloning, action chunking and SAC, each under a time
+  budget, in one format with safety checks ([§6](#6-plan-a-patient-case-pre-operative-planning))
 
 The robot has 4 action parameters, `[v_guidewire, w_guidewire, v_catheter, w_catheter]` in [−1, 1].
 The default anatomy is `0248_H_AOCERE_CAS`, a CT model from the aortic root to the circle of Willis
@@ -20,6 +23,8 @@ in 30 carotid-stenosis variants.
 | What | Where | Result |
 |---|---|---|
 | Behaviour-cloned SAC policy (organiser format) | organiser's XPBD physics, lockstep | **8/8** to their cas-reference goal, 30.4 s, 4.0 mm, peak force 0.009 N |
+| Case planner `plan_case.py` on the cas-reference target: A\*, entry-roll controller, BC, ACT in one 20-min run | organiser's physics, lockstep | roll, BC and ACT **6/6** each at 29 s (BC and ACT trained in ~10 min); A\* follower 0/6 on their rod; see [docs/CASE_PLANNING.md](docs/CASE_PLANNING.md) |
+| Constrained A\* with length, time and damage costs on the ICA lesions of two stenosis variants, executed with the calibrated entry roll | organiser's physics on the variant meshes, lockstep | plans in 10-40 ms; 70 % left lesion **reached in 27 s at 1.9 mm**, right lesion 9 mm short at full travel; local replan 143-350 edge states vs 620-1040 cold; see [docs/PLANNER.md](docs/PLANNER.md) |
 | Scripted expert `EntryRollExpert` (roll 120° at the entry, then push) | organiser's physics, lockstep | 60/60 demos, including with action noise |
 | Constrained A\* + trajectory follower, catheter to right M1 past an 85 % ICA stenosis | our simulator, 0248 | 20/20 in 26.5 s (plain shortest path: 0/20) |
 | Safety monitor on an imperfect policy | synthetic arch, stressed tracking | success 60 → 100 %, target overshoot 40 → 0 % |
@@ -64,14 +69,14 @@ carotid arteries (`left_carotid@140` and `right_carotid@118`):
 
 | Dominant Side | Blockage Severity | Variant Configurations (`--variant <NAME>`) |
 |---|---|---|
-| **Left > Right** *(Left ? 50%)* | **100% Left** (occluded) | `10Right100Left`, `25Right100Left`, `40Right100Left`, `50Right100Left`, `70Right100Left`, `85Right100Left` |
-| **Left > Right** *(Left ? 50%)* | **85% Left** | `10Right85Left`, `25Right85Left`, `40Right85Left` *(default symmetry pair to `40Left85Right`)* |
-| **Left > Right** *(Left ? 50%)* | **70% Left** | `10Right70Left`, `25Right70Left`, `40Right70Left` |
-| **Left > Right** *(Left ? 50%)* | **50% Left** | `10Right50Left`, `25Right50Left`, `40Right50Left` |
-| **Right > Left** *(Right ? 50%)* | **100% Right** (occluded) | `10Left100Right`, `25Left100Right`, `40Left100Right`, `50Left100Right`, `70Left100Right`, `85Left100Right` |
-| **Right > Left** *(Right ? 50%)* | **85% Right** | `10Left85Right`, `25Left85Right`, `40Left85Right` *(default variant)* |
-| **Right > Left** *(Right ? 50%)* | **70% Right** | `10Left70Right`, `25Left70Right`, `40Left70Right` |
-| **Right > Left** *(Right ? 50%)* | **50% Right** | `10Left50Right`, `25Left50Right`, `40Left50Right` |
+| **Left > Right** *(Left ≥ 50%)* | **100% Left** (occluded) | `10Right100Left`, `25Right100Left`, `40Right100Left`, `50Right100Left`, `70Right100Left`, `85Right100Left` |
+| **Left > Right** *(Left ≥ 50%)* | **85% Left** | `10Right85Left`, `25Right85Left`, `40Right85Left` *(default symmetry pair to `40Left85Right`)* |
+| **Left > Right** *(Left ≥ 50%)* | **70% Left** | `10Right70Left`, `25Right70Left`, `40Right70Left` |
+| **Left > Right** *(Left ≥ 50%)* | **50% Left** | `10Right50Left`, `25Right50Left`, `40Right50Left` |
+| **Right > Left** *(Right ≥ 50%)* | **100% Right** (occluded) | `10Left100Right`, `25Left100Right`, `40Left100Right`, `50Left100Right`, `70Left100Right`, `85Left100Right` |
+| **Right > Left** *(Right ≥ 50%)* | **85% Right** | `10Left85Right`, `25Left85Right`, `40Left85Right` *(default variant)* |
+| **Right > Left** *(Right ≥ 50%)* | **70% Right** | `10Left70Right`, `25Left70Right`, `40Left70Right` |
+| **Right > Left** *(Right ≥ 50%)* | **50% Right** | `10Left50Right`, `25Left50Right`, `40Left50Right` |
 
 *(Note: `70Left100Right` and `85Left100Right` also have >50% Left blockage combined with 100% Right occlusion.)*
 
@@ -110,6 +115,13 @@ python scripts/playground.py --model 0248_H_AOCERE_CAS --target right_anterior@2
 For 0248 the carotid paths run CCA, ICA, then M1; `*_anterior` is A1 and `*_carotid_external` the ECA.
 
 ## 3. Plan a path and a robot trajectory
+
+The constrained A\* costs inserted length, estimated time and damage (bending effort, curvature
+integral, narrow lumen, a contact-force proxy) with named profiles (`shortest`, `fastest`, `gentle`,
+`balanced`), keeps forbidden vessels and lumen clearance as hard constraints, reports the four
+evaluations of a route before execution, and replans locally from the current tip
+([docs/PLANNER.md](docs/PLANNER.md)). `python scripts/demo_astar_costs.py --visible` plans the ICA
+lesions of two stenosis variants and executes the routes on the organiser's physics.
 
 ```bash
 python scripts/plan_path.py --target right_carotid@40 --follow 20 --record
@@ -310,6 +322,34 @@ python scripts/export_handover.py --run-dir runs/stroke-nav-bc-v1 --plan-target 
 bundle contains, and how to read their results (including what `aborted` episodes mean). Their own
 stack also runs on this laptop with `powershell -ExecutionPolicy Bypass -File tools\organiser_stack.ps1 start`
 (docs/ORGANISER_SETUP.md §11), but not fast enough for their RL env.
+
+## 6. Plan a patient case (pre-operative planning)
+
+The revised requirement is per-patient, per-target planning rather than a generic policy: given the
+patient's vessel model and one target, propose the path the robot will take, from several methods,
+each within a known training budget, so that a safety layer or a clinician can choose
+([docs/CASE_PLANNING.md](docs/CASE_PLANNING.md)).
+
+```bash
+powershell -ExecutionPolicy Bypass -File tools\organiser_stack.ps1 stop          # the lockstep pages need the CPU
+python scripts/plan_case.py --target right_carotid@40 --case-id rca40            # all default methods, ~25 min
+python scripts/plan_case.py --target xyz:-78.0,118.5,-274.0 --methods astar,roll,bc --bc-minutes 5
+```
+
+- **Methods** (`--methods`): `astar` (A\* + closed-loop follower, our simulator, seconds), `astar_theirs`
+  (the same follower on their physics), `roll` (the calibrated entry-roll controller), `bc`
+  (demonstrations at this target + behaviour cloning into the hand-over SAC model), `act` (action
+  chunking on the same demonstrations), `sac` (SAC fine-tuning from the BC model). Budgets:
+  `--bc-minutes`, `--act-minutes`, `--sac-minutes`, `--eval-episodes`.
+- **Output** `results/cases/<case-id>/`: `summary.md` (one row per method: train time, plan time, success,
+  time to goal, safety verdict and flags), `candidates/<method>.json` (every rollout in one format: tip
+  path, insertion, actions, distance, force), `trajectory_<method>.csv` (the representative episode),
+  `candidates.png`, `case.json` (route and reachability) and `goals.json` (the target for
+  `eval_lockstep.py` / `demo_lockstep.py --goals ... --split train`).
+- **Safety checks** on every trajectory, with the thresholds of docs/SAFETY.md: lumen corridor,
+  wrong-vessel entry, overshoot, contact force, speed envelope, robot travel.
+- Learned candidates are trained on the organiser's physics in the lockstep env; the BC and SAC models
+  pass `check_handover.py` and can be handed over for this one target.
 
 ## Environment reference (`stroke_nav.env.vessel_env.VesselNavEnv`)
 

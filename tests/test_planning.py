@@ -175,3 +175,88 @@ def test_follower_densify_bounds_spacing():
     d = _densify(pts, 0.5)
     assert np.allclose(d[0], pts[0]) and np.allclose(d[-1], pts[-1])
     assert np.linalg.norm(np.diff(d, axis=0), axis=1).max() <= 0.5 + 1e-9
+
+
+# ---------------------------------------------------------------- cost terms, profiles, evaluation, replanning
+def test_profiles_trade_length_against_damage(loop_anatomy):
+    from stroke_nav.planning.planner import evaluate_plan
+
+    a = loop_anatomy
+    start, target = a.default_start(), a.resolve("distal@-3")
+    stiff = DeviceSpec("stiff", outer_diameter_mm=0.5, min_bend_radius_mm=8.0)
+    shortest = PathPlanner(a, stiff, PlannerWeights.profile("shortest")).plan(start, target)
+    gentle = PathPlanner(a, stiff, PlannerWeights.profile("gentle")).plan(start, target)
+    fastest = PathPlanner(a, stiff, PlannerWeights.profile("fastest")).plan(start, target)
+    assert shortest.feasible and gentle.feasible and fastest.feasible
+    assert "short_kinked" in shortest.branches() and "long_smooth" in gentle.branches()
+    # the detour turns more in total (out and back) but never sharply: less bending effort, lower peak curvature
+    assert gentle.costs["bend_effort"] < shortest.costs["bend_effort"]
+    assert gentle.curvature.max() < shortest.curvature.max()
+    assert shortest.length_mm <= gentle.length_mm
+    for p in (shortest, gentle, fastest):
+        assert p.costs["length_mm"] == pytest.approx(p.length_mm, abs=1e-6)
+        assert p.costs["est_time_s"] >= p.length_mm / PlannerWeights().v_max_mm_s - 1e-9
+    assert fastest.costs["est_time_s"] <= min(shortest.costs["est_time_s"], gentle.costs["est_time_s"]) + 1e-9
+    ev = evaluate_plan(gentle, travel_mm=1000.0)
+    assert ev["feasible"] and ev["robot_size"]["within_travel"] and ev["damage"]["tight_bends"] == 0
+    assert set(ev) >= {"robot_size", "reach_time", "damage", "wrong_arteries"}
+
+
+def test_time_model_slows_in_narrow_lumen_and_near_junctions(loop_anatomy):
+    a = loop_anatomy
+    p = PathPlanner(a, "guidewire")
+    far = [n for n in a.branch_nodes("aorta") if p.junction_distance(n) > 20.0]
+    assert far and p.speed_fraction(far[0]) == 0.5  # radius 2 mm: the 50 % zone
+    near = int(a.junctions()[0])
+    assert p.speed_fraction(near) == pytest.approx(0.3)  # junction slow zone
+    narrow = _narrow(a, "aorta", 1.0, lo=20, hi=25)
+    pn = PathPlanner(narrow, "guidewire")
+    n = next(n for n in narrow.branch_nodes("aorta") if narrow.radius[n] == 1.0)
+    assert pn.speed_fraction(n) == 0.25
+
+
+def test_forbidden_branch_stays_hard_under_every_profile(loop_anatomy):
+    a = loop_anatomy
+    start, target = a.default_start(), a.resolve("distal@-3")
+    for name in ("shortest", "fastest", "gentle", "balanced"):
+        w = PlannerWeights.profile(name, forbidden_branches=("short_kinked",))
+        plan = PathPlanner(a, "guidewire", w).plan(start, target)
+        assert plan.feasible and "short_kinked" not in plan.branches(), name
+
+
+def test_replan_resumes_on_route_and_warm_starts_off_route(loop_anatomy):
+    a = loop_anatomy
+    start, target = a.default_start(), a.resolve("distal@-3")
+    planner = PathPlanner(a, "guidewire", PlannerWeights.profile("balanced"))
+    full = planner.plan(start, target)
+    assert full.feasible
+    mid = full.nodes[len(full.nodes) // 2]
+    resumed = planner.replan(mid, target, previous=full)
+    assert resumed.method == "astar-resume" and resumed.nodes == full.nodes[full.nodes.index(mid):]
+    assert resumed.expanded == 0 and resumed.costs["rejoin_mm"] == 0.0
+    # the tip went into the other loop branch: replan from 15 mm inside it
+    other = "long_smooth" if "short_kinked" in full.branches() else "short_kinked"
+    nodes = a.branch_nodes(other)
+    inside = int(nodes[np.argsort(a.arc[nodes])[15]])
+    assert inside not in full.nodes
+    warm = planner.replan(a.nodes[inside], target, previous=full)
+    cold = planner.plan(inside, target)
+    assert warm.feasible and warm.nodes[0] == inside and warm.nodes[-1] == target
+    assert warm.method == "astar-warm" and warm.costs["rejoin_mm"] > 0.0
+    assert warm.expanded < len(a.nodes) * 2  # bounded by the local radius, not the whole graph
+    # local means local: the splice found inside the radius may cost more than the best global route
+    assert np.isfinite(warm.cost)
+
+
+def test_nearest_feasible_target_steps_back_from_a_lesion(loop_anatomy):
+    from stroke_nav.planning.planner import nearest_feasible_target
+
+    a = _narrow(loop_anatomy, "distal", 0.2, lo=20, hi=30)  # a lesion the microcatheter cannot pass
+    planner = PathPlanner(a, "microcatheter")
+    lesion = int(a.branch_nodes("distal")[np.argsort(a.arc[a.branch_nodes("distal")])[25]])
+    assert a.radius[lesion] == 0.2
+    node, back = nearest_feasible_target(planner, lesion)
+    assert node != lesion and 0.0 < back <= 10.0 and a.radius[node] >= planner.device.min_lumen_radius_mm
+    assert planner.plan(a.default_start(), node).feasible
+    ok, back0 = nearest_feasible_target(planner, a.resolve("distal@-3"))
+    assert back0 == 0.0 and ok == a.resolve("distal@-3")

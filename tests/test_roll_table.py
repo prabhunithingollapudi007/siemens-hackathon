@@ -72,3 +72,26 @@ def test_signed_rolls_prefer_the_smallest_turn(tmp_path):
     f.write_text(json.dumps({"paths": [{"roll_deg": p.roll_deg, "seed": p.seed, "tip_m": p.tip_m.tolist(),
                                         "ins_mm": p.ins_mm.tolist()} for p in (exact, near)]}))
     assert RollTable.load(f"{f},{f}", roll_range=(-180.0, 180.0)).rolls == [-15.0]
+
+
+def _straight(roll: float, offset_m: float) -> RollPath:
+    """A path along +z that passes ``offset_m`` beside the point (0, 0, 0.1)."""
+    z = np.linspace(0.0, 0.2, 41)
+    return RollPath(roll, 1, np.c_[np.full_like(z, offset_m), np.zeros_like(z), z], z * 1000.0)
+
+
+def test_robust_roll_is_the_centre_of_the_reaching_arc():
+    good = {90.0, 105.0, 120.0, 135.0, 150.0}
+    # 150 passes closest, but sits at the edge of the arc
+    t = RollTable([_straight(r, 0.0005 if r == 150.0 else 0.001 if r in good else 0.05) for r in np.arange(0.0, 360.0, 15.0)])
+    assert t.reach([0.0, 0.0, 0.1])[0] == 150.0
+    roll, miss = t.reach([0.0, 0.0, 0.1], robust_within_mm=5.0)
+    assert roll == 120.0 and miss == pytest.approx(1.0, abs=1e-6)
+    far = t.reach([0.0, 0.0, 0.1], robust_within_mm=0.1)  # nothing within: falls back to the closest
+    assert far[0] == 150.0
+
+
+def test_robust_roll_wraps_around_the_circle():
+    good = {330.0, 345.0, 0.0, 15.0}
+    t = RollTable([_straight(r, 0.001 if r in good else 0.05) for r in np.arange(0.0, 360.0, 15.0)])
+    assert t.reach([0.0, 0.0, 0.1], robust_within_mm=5.0)[0] == 0.0
