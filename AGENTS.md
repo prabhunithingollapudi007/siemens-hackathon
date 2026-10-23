@@ -3,7 +3,7 @@
 Guidance for coding agents and new contributors working in this repository. For the project overview
 and user-facing commands, see [README.md](README.md). For the organiser's system, see
 [docs/ORGANISER_SETUP.md](docs/ORGANISER_SETUP.md); for handing work over to them, see
-[docs/HANDOVER.md](docs/HANDOVER.md).
+[docs/HANDOVER.md](docs/HANDOVER.md); for the safety layer, [docs/SAFETY.md](docs/SAFETY.md); for the TinyGPU cluster, [docs/HPC.md](docs/HPC.md).
 
 ## What this repo is
 

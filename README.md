@@ -1,52 +1,61 @@
 # stroke-nav
 
 A playground for training controllers that steer a **guidewire + microcatheter** through
-patient-specific vessel models toward a stroke target. The setting is the mechanical-thrombectomy
-access route: aorta, aortic arch, carotid, ICA, then M1 or A1.
+patient-specific vessel models toward a stroke target, along the mechanical-thrombectomy access route
+(aorta, aortic arch, carotid, ICA, then M1 or A1). It contains:
 
-- **Anatomy:** any model from the [Vascular Model Repository](https://www.vascularmodel.com/dataset.html) (VMR) that has centerline paths.
-  The default is `0248_H_AOCERE_CAS`, a CT model from the aortic root to the circle of Willis that
-  comes in 30 carotid-stenosis variants.
-- **Robot:** 4 learnable action parameters, `[v_guidewire, w_guidewire, v_microcatheter, w_microcatheter]`.
-- **Evaluation:** START consensus metrics (Robertshaw et al., JAHA 2026).
+- a fast kinematic two-device simulator with a Gymnasium environment, on any
+  [Vascular Model Repository](https://www.vascularmodel.com/dataset.html) (VMR) model with centerlines
+- a device-aware path planner and robot trajectory generator
+- START consensus metrics (Robertshaw et al., JAHA 2026) and a runtime safety monitor
+- a layer that reproduces the hackathon organiser's RL interface, plus a faster-than-real-time
+  ("lockstep") env on the organiser's own physics, so what we train loads and runs in their stack
 
-## Setup
+The robot has 4 action parameters, `[v_guidewire, w_guidewire, v_catheter, w_catheter]` in [−1, 1].
+The default anatomy is `0248_H_AOCERE_CAS`, a CT model from the aortic root to the circle of Willis
+in 30 carotid-stenosis variants.
+
+## Results
+
+| What | Where | Result |
+|---|---|---|
+| Behaviour-cloned SAC policy (organiser format) | organiser's XPBD physics, lockstep | **8/8** to their cas-reference goal, 30.4 s, 4.0 mm, peak force 0.009 N |
+| Scripted expert `EntryRollExpert` (roll 120° at the entry, then push) | organiser's physics, lockstep | 60/60 demos, including with action noise |
+| Constrained A\* + trajectory follower, catheter to right M1 past an 85 % ICA stenosis | our simulator, 0248 | 20/20 in 26.5 s (plain shortest path: 0/20) |
+| Safety monitor on an imperfect policy | synthetic arch, stressed tracking | success 60 → 100 %, target overshoot 40 → 0 % |
+
+A video of the cloned policy on the organiser's physics page is written to `results/demo_bc_policy.mp4`
+by `scripts/demo_lockstep.py` (`results/` is not in git).
+
+## Setup (Windows, Python 3.12)
 
 ```bash
 py -3.12 -m venv --system-site-packages .venv
-.venv\Scripts\pip install -e .[viz,dev]
+.venv\Scripts\activate
+pip install -e .[viz,dev]
+python scripts/fetch_data.py --model 0248_H_AOCERE_CAS      # ~14 MB, builds data/processed/
 ```
 
-The dependencies are pinned to the organiser's toolchain so trained models load on their side:
-NumPy 1.26.4, Gymnasium 1.4.0, Stable-Baselines3 2.9.0 and PyTorch 2.14.1 on Python 3.12.
-For GPU training, install a CUDA build of PyTorch 2.14.1 (the organiser uses cu130).
+Versions are pinned to the organiser's toolchain so trained models load on their side: NumPy 1.26.4,
+Gymnasium 1.4.0, Stable-Baselines3 2.9.0, PyTorch 2.14.1. For GPU training install a CUDA build of
+PyTorch 2.14.1 (the organiser uses cu130). All commands below run in the activated venv.
 
-## 1. Download a model
+## 1. Anatomy
 
 ```bash
-python scripts/fetch_data.py --list --anatomy cerebral        # browse models that have centerlines
-python scripts/fetch_data.py --model 0248_H_AOCERE_CAS         # ~14 MB of a 717 MB zip
+python scripts/fetch_data.py --list --anatomy cerebral          # models that have centerlines
 python scripts/fetch_data.py --model 0248_H_AOCERE_CAS --list-variants
 python scripts/fetch_data.py --model 0248_H_AOCERE_CAS --variant 10Left100Right
-python scripts/fetch_data.py --model 0050_H_CERE_H
+python scripts/plot_anatomy.py --model 0248_H_AOCERE_CAS        # results/<model>_anatomy.png
 ```
 
-Only the centerlines (`Paths/*.pth`), the surface model (`Models/*.vtp`) and the license are pulled.
-The script uses HTTP range requests, so the full zip is never downloaded. The script then builds
-`data/processed/<model>_<variant>.npz`, which holds the centerline graph (1 mm nodes, junctions,
-loops) and the lumen radius per node:
+Only the centerlines, the surface model and the license are pulled, with HTTP range requests (the
+717 MB zip is never downloaded). `data/processed/<model>_<variant>.npz` then holds the centerline graph
+(1 mm nodes) and a lumen radius per node, measured from wall-to-wall rays so it stays accurate where
+the centerline runs off-centre. Tails outside the surface are trimmed, and gaps of 3 mm or more in a
+large vessel are marked as occlusions (the 100 % stenosis variants).
 
-- The radius is half the median wall-to-wall chord across the vessel, from rays cast perpendicular to the centerline.
-  This stays accurate where the centerline runs off-centre, such as the carotid siphon.
-- Centerline tails that run outside the surface model are trimmed.
-- A gap of 3 mm or more inside a large vessel (median radius 1.5 mm or more) is marked as an occlusion, with radius 0.
-  The 100% stenosis variants of 0248 show up this way.
-
-```bash
-python scripts/plot_anatomy.py --model 0248_H_AOCERE_CAS      # results/<model>_anatomy.png
-```
-
-## 2. Pick a target and drive
+## 2. Drive and pick targets
 
 ```bash
 python scripts/playground.py --model 0248_H_AOCERE_CAS
@@ -55,97 +64,52 @@ python scripts/playground.py --model 0248_H_AOCERE_CAS --target right_anterior@2
 
 | Key | Action |
 |---|---|
-| Up / Down | guidewire advance / retract |
-| Left / Right | guidewire rotate |
-| i / k | microcatheter advance / retract |
-| n / m | microcatheter rotate |
+| Up / Down, Left / Right | guidewire advance / retract, rotate |
+| i / k, n / m | microcatheter advance / retract, rotate |
 | b | advance both |
-| p | pick the point under the mouse as the target (press g to switch to setting the start) |
-| o / space | one oracle step / oracle autopilot on-off |
-| l | plan a device-feasible path to the target and show it, coloured by planned speed |
-| h | follow the planned trajectory (robot autopilot) on-off |
-| x | reset episode |
-| c | toggle centerlines |
-| z | print START metrics |
+| p | pick the point under the mouse as the target (g: set the start instead) |
+| o / space | one oracle step / oracle autopilot |
+| l / h | plan a device-feasible path / follow it (robot autopilot) |
+| x, c, z | reset, toggle centerlines, print START metrics |
 
-Picked points snap to the nearest centerline node and are saved to `data/targets/<model>.json`.
-
-**Target specs.** The same format works everywhere (`--target`, `EnvConfig.target`, `reset(options={"target": ...})`):
+**Target specs** work everywhere (`--target`, `EnvConfig.target`, `reset(options={"target": ...})`):
 
 | Spec | Meaning |
 |---|---|
-| `left_carotid@120` | 120 mm along a branch |
-| `left_carotid@-5` | 5 mm from the branch's distal end |
+| `left_carotid@120`, `left_carotid@-5` | 120 mm along a branch; 5 mm from its distal end |
 | `random:left_carotid@-15--1\|right_carotid@-15--1` | a new random node per episode (here M1) |
-| `xyz:-120,110,-200` | nearest node to a point (mm) |
-| `1234` | a node id |
-| `file:data/targets/0248_H_AOCERE_CAS.json` | a saved pick |
+| `xyz:-120,110,-200`, `1234` | nearest node to a point (mm); a node id |
+| `file:data/targets/0248_H_AOCERE_CAS.json` | a point picked in the playground |
 
-For 0248, the carotid paths run CCA, ICA, then M1; `*_anterior` is A1; `*_carotid_external` is the ECA.
+For 0248 the carotid paths run CCA, ICA, then M1; `*_anterior` is A1 and `*_carotid_external` the ECA.
 
-## 3. Evaluate with START metrics
-
-```bash
-python scripts/evaluate.py --policies oracle,random,forward --episodes 100 \
-    --target "random:left_carotid@20-70|right_carotid@20-70"
-```
-
-The script writes `results/<name>/start_summary.md` and `episodes.csv`. The reported metrics are:
-
-- success rate with a Wilson 95% interval
-- procedure time and fluoroscopy time
-- number of steps
-- phases (route bifurcations passed)
-- wrong-branch failures
-- handling errors (retractions plus wall pushes)
-- path length per device
-- tip speed
-- path-following error
-- contact force
-- path ratio
-
-Policies get identical episode seeds, so the comparison is paired. A trained Stable-Baselines3
-policy plugs in as `ppo:path/to/model.zip`.
-
-## 4. Plan a feasible path and a robot trajectory
+## 3. Plan a path and a robot trajectory
 
 ```bash
 python scripts/plan_path.py --target right_carotid@40 --follow 20 --record
-python scripts/plan_path.py --variant 10Left100Right --target right_carotid@40 --follow 20
-python scripts/plan_path.py --target right_carotid@40 --forbid anterior_connector,left_communicating,right_communicating,right_posterior
+python scripts/plan_path.py --target right_carotid@40 --forbid anterior_connector,left_communicating,right_communicating
 python scripts/plan_path.py --target left_anterior@20 --device guidewire --hard-curvature
-python scripts/compare_routes.py        # side-by-side GIF: shortest path vs device-aware plan (occluded right ICA)
+python scripts/compare_routes.py          # GIF: shortest path vs device-aware plan around an occluded ICA
 ```
 
-The pipeline has four parts (`src/stroke_nav/planning/`):
+`src/stroke_nav/planning/` has four parts:
 
-1. **Device limits** (`constraints.py`). Each device has an outer diameter, a minimum bend radius and a clearance factor.
-   Presets: 0.014" guidewire (0.36 mm), 1.7F microcatheter (0.57 mm) and 6F guide catheter (2.0 mm).
-   A device may only enter lumen with diameter at least 1.2 times its outer diameter.
-2. **Constrained A\*** (`planner.py`). The search runs over directed edges, so each step knows the incoming direction.
-   - Hard limits: lumen clearance, and optionally bend radius (`--hard-curvature`) and forbidden vessels (`--forbid`).
-   - Soft costs: length, narrow lumen, bending effort (curvature relative to the device limit), each vessel change, and sharp bifurcation take-off angles.
-   - Plain Dijkstra is reported next to it as the baseline.
-3. **Trajectory** (`trajectory.py`).
-   - The speed profile is limited by curvature, narrow lumen and a slow zone before each bifurcation, then by acceleration.
-   - For each bifurcation, the guidewire roll that makes the pre-curved tip enter the planned vessel is computed with the simulator's own tip model.
-   - The output is a joint-space reference at the control rate (5 Hz): inserted length and roll for the guidewire and the catheter.
-     The wire pauses before a junction until it has rotated, and the catheter trails 10 mm behind, then advances to the target.
-4. **Follower** (`agents/follower.py`). The follower tracks the reference using only joint encoders and the observed tip position.
-   If the tip leaves the planned path, it backs up past the last bifurcation and retries.
+1. **Device limits** (`constraints.py`): outer diameter, minimum bend radius and clearance; a device
+   enters only lumen at least 1.2× its diameter. The organiser's devices (`radifocus_035`,
+   `judkins_5f`) come from `device-parameters.json`; generic presets are 0.014" wire, 1.7F
+   microcatheter and 6F guide.
+2. **Constrained A\*** (`planner.py`) over directed edges. Hard limits: clearance, optionally bend
+   radius and forbidden vessels. Soft costs: length, narrow lumen, bending, vessel changes, sharp
+   take-off angles. Plain Dijkstra is reported as the baseline.
+3. **Trajectory** (`trajectory.py`): a speed profile limited by curvature, lumen and bifurcations; the
+   guidewire roll for each bifurcation from the simulator's tip model; a 5 Hz joint-space reference
+   with the catheter trailing the wire.
+4. **Follower** (`agents/follower.py`): tracks the reference from encoders and the observed tip, and
+   backs up and retries if the tip leaves the path.
 
-Each run writes `results/plans/<name>/` with these files:
-
-| File | Contents |
-|---|---|
-| `report.md` | route comparison, bifurcation and roll table, trajectory summary, START metrics |
-| `profiles.png` | radius, bend radius and speed along the path; joint references over time |
-| `path3d.png` | 3D view: planned path coloured by speed, plain shortest path in grey |
-| `trajectory.csv` | joint-space reference: `t_s, L_guidewire_mm, roll_guidewire_deg, L_microcatheter_mm, roll_microcatheter_deg` |
-| `plan.json` | path nodes with geometry and speed, plus roll events |
-| `follow.gif` | the follower executing the plan (with `--record`) |
-
-In code:
+Each run writes `results/plans/<name>/`: `report.md`, `profiles.png`, `path3d.png`, `trajectory.csv`
+(`t_s, L_guidewire_mm, roll_guidewire_deg, L_microcatheter_mm, roll_microcatheter_deg`), `plan.json`
+and, with `--record`, `follow.gif`.
 
 ```python
 from stroke_nav.data.anatomy import Anatomy
@@ -154,205 +118,98 @@ from stroke_nav.planning.trajectory import build_trajectory
 
 anat = Anatomy.load("0248_H_AOCERE_CAS")
 plan = PathPlanner(anat, "radifocus_035").plan(anat.default_start(), anat.resolve("right_carotid@40"))
-traj = build_trajectory(plan)          # traj.t, traj.L_wire, traj.phi_wire, traj.L_cath, traj.phi_cath
-traj.to_csv("trajectory.csv")
+build_trajectory(plan).to_csv("trajectory.csv")
 ```
 
-Example results on 0248, reference variant with 85% right ICA stenosis, target right M1. Each simulator row is 20 episodes.
+On 0248 with an 85 % right ICA stenosis, the microcatheter cannot pass the stenosis (0/20 on the
+shortest path); constrained A\* routes it up the left carotid and across the anterior communicating
+connector to the right M1 (44 mm longer, 20/20). That detour is feasible but not a standard clinical
+approach; `--forbid` excludes collaterals.
 
-| Route | Result |
-|---|---|
-| Guidewire plan | Straight up the right ICA. The 0.26 mm narrowest lumen clears the 0.22 mm the wire needs. |
-| Microcatheter, plain Dijkstra | Infeasible, because the stenosis is narrower than the 0.34 mm the catheter needs. In the simulator it gets stuck at the stenosis: 0/20. |
-| Microcatheter, constrained A\* | Up the left carotid, across the anterior communicating connector, then to the right M1. 44 mm longer. Executed 20/20 in 26.5 s. |
-| Same plan, collaterals forbidden | No feasible path. In that case only the wire can cross; the catheter cannot. |
-
-The detour through the circle of Willis is geometrically feasible, but it is not a standard clinical approach.
-Use `--forbid` to exclude collateral vessels.
-
-## 5. Hand over to the organiser
-
-The organiser's stack (OpenNG3 plus the EndoNav/CatForce simulator and `openng3_rl` SAC) is documented
-in [docs/ORGANISER_SETUP.md](docs/ORGANISER_SETUP.md). `src/stroke_nav/organiser/` reproduces their RL
-interface on top of our simulator. That covers their action and observation spaces, reward, success
-rule, noise, device parameters, scenario and SAC settings. It also contains the fitted transform
-between our VMR anatomy and their world frame (median 0.45 mm). What we train can therefore be
-dropped into their `runs/` folder:
+## 4. Evaluate
 
 ```bash
-.venv\Scripts\python.exe scripts/train_sac.py --total-timesteps 50000              # organiser-format run folder
-.venv\Scripts\python.exe scripts/check_handover.py --run-dir runs/<run_id>          # validates like their evaluation
-.venv\Scripts\python.exe scripts/export_handover.py --run-dir runs/<run_id> --plan-target right_carotid_external@21
+python scripts/evaluate.py --policies oracle,random,forward --episodes 100 --target "random:left_carotid@20-70|right_carotid@20-70"
+python scripts/evaluate_safety.py --synthetic --episodes 20 --policies follower,sloppy,forward
 ```
 
-The organiser's own stack also runs on this laptop: `powershell -ExecutionPolicy Bypass -File tools\organiser_stack.ps1 start`.
-See [docs/ORGANISER_SETUP.md](docs/ORGANISER_SETUP.md), section 11.
+`evaluate.py` writes `results/<name>/start_summary.md` and `episodes.csv` with the START metrics:
+success (Wilson 95 % interval), procedure and fluoroscopy time, phases, wrong-branch failures,
+handling errors, path length per device, tip speed, path-following error, contact force and path
+ratio. Policies get the same episode seeds, so comparisons are paired; a trained SB3 policy plugs in
+as `ppo:path/to/model.zip`. The safety monitor and fault injection are described in
+[docs/SAFETY.md](docs/SAFETY.md).
 
-**Policy trained on their physics.** `stroke_nav.organiser.live.lockstep` runs their physics page and
-their env faster than real time, without Docker or ROS. A scripted expert (`EntryRollExpert`: roll
-the wire to 120° at the entry, then push) reaches their goal in every episode. A SAC policy
-behaviour-cloned from it reaches it too: 8 of 8 on unseen seeds, in 30 s. See section 14 of
-[docs/ORGANISER_SETUP.md](docs/ORGANISER_SETUP.md).
+## 5. Train for the organiser and hand over
+
+The organiser's stack (OpenNG3, the EndoNav/CatForce browser physics and `openng3_rl` SAC) is described in
+[docs/ORGANISER_SETUP.md](docs/ORGANISER_SETUP.md). There are two ways to train a policy in their format:
+
+**On their physics (recommended).** `stroke_nav.organiser.live.lockstep` runs their physics page, noisy
+viewer and `OpenNG3Env` headless and faster than real time, without Docker or ROS (their live stack
+reaches only 0.18× real time on this laptop). A scripted expert is recorded there and cloned into
+their SAC policy:
 
 ```bash
-.venv\Scripts\python.exe scripts/record_demos.py --episodes 60 --sigmas 0,0.2,0.4 --workers 4 --max-steps 300
-.venv\Scripts\python.exe scripts/train_bc.py --demos runs/demos/cas-reference --device cuda
-.venv\Scripts\python.exe scripts/eval_lockstep.py --model runs/<run_id>/final-model.zip --episodes 8 --workers 4
-.venv\Scripts\python.exe scripts/demo_lockstep.py --record results/demo_bc_policy.mp4   # watch it on their pages and record a video
+python scripts/record_demos.py --episodes 60 --sigmas 0,0.2,0.4 --workers 4 --max-steps 300   # expert demos
+python scripts/train_bc.py --demos runs/demos/cas-reference --device cuda --run-id stroke-nav-bc-v1
+python scripts/eval_lockstep.py --model runs/stroke-nav-bc-v1/final-model.zip --episodes 8 --workers 4
+python scripts/demo_lockstep.py --record results/demo_bc_policy.mp4                          # watch and record
 ```
 
-### Deploy on the organiser's machine
+**In our simulator.** `src/stroke_nav/organiser/` reproduces their action and observation spaces,
+reward, success rule, noise, device parameters, scenario and SAC settings on our kinematic simulator,
+with a fitted transform to their world frame (median 0.45 mm). Policies trained this way are a warm
+start that needs fine-tuning on their physics. `python scripts/train_sac.py --total-timesteps 50000`
+writes an organiser-format run folder; for long runs see [docs/HPC.md](docs/HPC.md) (FAU TinyGPU).
 
-Their own evaluation (`./sys startup --mode showcase`) runs the policy on their full stack: robot
-simulator, ROS 2, physics page and noisy viewer, in real time. It needs Linux with Docker, and a
-machine fast enough for their 4.5 Hz image check (this laptop manages 3.3 Hz, so it has not been run
-here).
-
-1. **Package** the run (already done for `stroke-nav-bc-v1`):
-
-   ```bash
-   .venv\Scripts\python.exe scripts/check_handover.py --run-dir runs/stroke-nav-bc-v1
-   .venv\Scripts\python.exe scripts/export_handover.py --run-dir runs/stroke-nav-bc-v1 --plan-target right_carotid_external@21
-   ```
-
-   `handover/stroke-nav-bc-v1.zip` contains `runs/stroke-nav-bc-v1/` with `final-model.zip`,
-   `resolved-config.json`, `device-parameters.json` (hash `38b1ea53…`, as theirs) and `scenario.json`
-   (their cas-reference manifest). Their showcase checks all four.
-
-2. **Copy** the run into their RL repository (`$HCMR_RL_REPO_PATH`, by default `../HCMR-EV-RL` next to
-   `HCMR-EV-OpenNG3`, or `~/HCMR-EV-RL`):
-
-   ```bash
-   unzip stroke-nav-bc-v1.zip
-   cp -r stroke-nav-bc-v1/runs/stroke-nav-bc-v1 ~/HCMR-EV-RL/runs/
-   ```
-
-3. **Run** their evaluation from `HCMR-EV-OpenNG3` (`--visible` shows the physics page):
-
-   ```bash
-   ./sys startup --mode showcase --scenario cas-reference --run-id stroke-nav-bc-v1 --model final-model.zip --episodes 10 --visible
-   ```
-
-   It runs `openng3-rl-evaluate` in the `hcmr-online-rl` container with deterministic actions and
-   records every rollout. Expect the wire to roll to about 120° and push into the right external
-   carotid in about 30 s, as in `results/demo_bc_policy.mp4`.
-
-4. **Read the results**:
-   - per episode: `HCMR-EV-RL/runs/stroke-nav-bc-v1/evaluations/<id>/episodes.json` (`success`, `outcome`, `return`, `unsafe`)
-   - their summary: `success_rate`, `aborted_episodes`, `mean_return`
-   - recorded rollouts in their dataset viewer at http://localhost:8090
-   - logs: `docker logs hcmr-online-rl`
-   - when finished, `./sys shutdown` (it also finalises the rollout dataset)
-
-What to watch for:
-
-- **`aborted` episodes:** their env dropped stale image and state packets, so the machine is too slow
-  for real time. This says nothing about the policy.
-- **A device-parameter error at startup:** their simulator settings no longer match the run's
-  `device-parameters.json`.
-- **Failures without aborts:** a real gap between lockstep and their wall-clock stack. In lockstep,
-  the robot's 50 ms delay and the noise node are emulated from their sources, not run in their
-  containers.
-
-[docs/HANDOVER.md](docs/HANDOVER.md) lists what is identical, what is approximate and what is missing,
-and gives the exact commands to run on their side. The organiser's own 210k-step checkpoint loads in
-our compatible environment with identical spaces.
-
-## 6. Train on the FAU TinyGPU cluster
-
-[TinyGPU](https://doc.nhr.fau.de/clusters/tinygpu/) is FAU's Tier3 GPU cluster (RTX 2080 Ti, RTX 3080, V100 and
-A100 nodes, batch jobs up to 24 h). Measured on a 2080 Ti node, SAC runs at about 26 steps/s once learning
-starts, against 14-20 on a laptop GPU, so the organiser's 1M-step run takes roughly 11-20 h and the job script
-defaults to the 24 h limit. The bigger win is running several seeds or settings in parallel, one GPU each. Scripts are in `hpc/`; they follow the NHR@FAU "HPC in a Nutshell" and "AI on HPC in a
-Nutshell" guidance (Oct 2026).
-
-**Access.** Login is by SSH key only (upload it in the [HPC portal](https://portal.hpc.fau.de/)). The frontend
-`tinyx.nhr.fau.de` is reachable directly only from the FAU network or VPN; from elsewhere go through the dialog
-server `csnhr.nhr.fau.de` by adding `ProxyJump csnhr.nhr.fau.de` to the host entry. A minimal `~/.ssh/config`:
-
-```
-Host tinyx.nhr.fau.de
-    User <hpc-account>
-    IdentityFile ~/.ssh/<key-file>
-    # ProxyJump csnhr.nhr.fau.de    # only when outside the FAU network and VPN
-```
-
-Run the copy commands below **on your own machine**, not in a shell already logged in on the cluster; the
-cluster has no private key, so an `scp`/`rsync` from there back to itself is refused.
-
-**Storage.** `$HOME` is 50 GB with backups, `$WORK` is 1 TB without. The repo, the venv and the finished run folders
-live in `$WORK`. Inside a job, TensorBoard logs and checkpoints are written to the node-local SSD `$TMPDIR` and
-synced back to `runs/` every 15 min, at the end and on the time-limit signal, so the NFS servers are not hit with
-small frequent writes.
+**Hand over.** Check and package a run, then run their own evaluation on their machine:
 
 ```bash
-# 1. on your machine: copy only code and data (~10 MB plus anatomy; the full checkout is GBs).
-#    scp cannot expand $WORK, so look it up once and use the real path:
-ssh tinyx.nhr.fau.de 'mkdir -p $WORK/stroke-nav && echo $WORK'          # e.g. /home/woody/iwi5/<account>
-scp -r src scripts compat hpc tests data pyproject.toml README.md .gitattributes tinyx.nhr.fau.de:<WORK>/stroke-nav/
-
-# 2. on the frontend (ssh tinyx.nhr.fau.de): venv under $WORK, CUDA PyTorch 2.14.1, package, anatomy
-cd $WORK/stroke-nav && bash hpc/setup_tinygpu.sh
-
-# 3. submit; everything after the script name goes to scripts/train_sac.py
-sbatch.tinygpu hpc/train_sac.sbatch --total-timesteps 1000000                  # ~11-20 h
-sbatch.tinygpu --array=0-3 hpc/train_sac.sbatch --total-timesteps 200000      # 4 seeds, 4 GPUs
-sbatch.tinygpu -p a100 --gres=gpu:a100:1 hpc/train_sac.sbatch                   # other GPU type
-squeue.tinygpu && tail -f slurm-stroke-nav-sac-*.out
-
-# 4. back on your machine: fetch the run folders
-scp -r tinyx.nhr.fau.de:<WORK>/stroke-nav/runs/<run_id> runs/
+python scripts/check_handover.py --run-dir runs/stroke-nav-bc-v1
+python scripts/export_handover.py --run-dir runs/stroke-nav-bc-v1 --plan-target right_carotid_external@21
+# on their Linux machine, after copying runs/stroke-nav-bc-v1 into HCMR-EV-RL/runs/, from HCMR-EV-OpenNG3:
+./sys startup --mode showcase --scenario cas-reference --run-id stroke-nav-bc-v1 --model final-model.zip --episodes 10 --visible
 ```
 
-For a quick test use an interactive job (limit 4 h): `salloc.tinygpu --gres=gpu:1 --time=01:00:00`, then
-`source $WORK/venvs/stroke-nav/bin/activate` and run `scripts/train_sac.py` directly. Compute nodes have no
-direct internet (the scripts export the NHR proxy for pip), so fetch anatomy on the frontend or copy
-`data/processed/` from your machine. All Slurm commands on this cluster use the `.tinygpu` wrappers.
-Check GPU use of a running job with `srun.tinygpu --jobid=<id> --pty nvidia-smi` or in
-[ClusterCockpit](https://doc.nhr.fau.de/job-monitoring-with-clustercockpit/).
+[docs/HANDOVER.md](docs/HANDOVER.md) lists what matches their stack and what is approximate, what the
+bundle contains, and how to read their results (including what `aborted` episodes mean). Their own
+stack also runs on this laptop with `powershell -ExecutionPolicy Bypass -File tools\organiser_stack.ps1 start`
+(docs/ORGANISER_SETUP.md §11), but not fast enough for their RL env.
 
-## Environment (`stroke_nav.env.vessel_env.VesselNavEnv`)
+## Environment reference (`stroke_nav.env.vessel_env.VesselNavEnv`)
 
-- **Devices: `device-parameters.json` is the source of truth.** Every simulator, planner and robot path reads it
-  through `stroke_nav.organiser.spec.DEFAULT_SPEC`: tip angle and length of both devices, and the planner's device
-  diameters (`radifocus_035`, `judkins_5f`). With the organiser's robot come the control rate (5 Hz), speed limits
-  (10 mm/s, 1 rad/s) and travel (guidewire 264.5 mm, catheter at most 229.2 mm ahead of the wire).
-  `STROKE_NAV_DEVICE_PARAMS=<file>` selects another file. Stiffness, friction and damping only matter to the
-  organiser's rod physics, because our simulator is kinematic. Targets past the robot's travel cannot be reached
-  (for 0248, the distal ICA and M1 lie 450-530 mm along the vessels).
-- **Action** `Box(-1, 1, (4,))`: `[v_guidewire, w_guidewire, v_catheter, w_catheter]`, scaled by the speed limits above.
-  `device_sim_params()` builds the defaults; pass an explicit `SimParams` only for experiments outside the organiser's setup.
-- **Observation** (46 floats): 3 tracking points per device tip, now and at the previous step, plus the target, the target minus the tip, and the previous action.
-  These are the inputs used by Robertshaw et al. 2024 and 2025.
-- **Reward:** `-0.005 - 0.01 * Δ(geodesic distance to target, mm) + 1.0 on success`.
-  The papers use a progress coefficient of 0.001; set `progress_coef` to match.
-- **Success:** the microcatheter tip (or the guidewire tip, via `success_device`) is within 5 mm of the target along the centerlines.
-- **Device model** (`env/devices.py`): both devices share one track through the centerline graph. The leading device's pre-curved tip chooses the vessel at each bifurcation, based on its roll angle.
-  Rotation is therefore required: pushing forward alone never reaches the carotids. A catheter close behind the wire reduces steering noise.
-  The model is kinematic, with no wall forces yet, so contact force reports n/a and wall pushes stand in as the proxy.
-- **Lumen limits:** a device cannot enter lumen narrower than its clearance requires (`SimParams.enforce_lumen`).
-  For example, the microcatheter stops at a tight stenosis that the guidewire can cross.
-  Episode routes, used by the oracle and for wrong-branch counting, are planned by the constrained A\* for the success device (`EnvConfig.plan_routes`).
+- **Devices:** `device-parameters.json` is the source of truth for both devices (tip angle and length,
+  diameters) and the organiser's robot (5 Hz, 10 mm/s, 1 rad/s, guidewire travel 264.5 mm, catheter at
+  most 229.2 mm ahead of the wire). `STROKE_NAV_DEVICE_PARAMS=<file>` selects another file. Targets past
+  the travel cannot be reached (for 0248 the distal ICA and M1 lie 450-530 mm along the vessels).
+- **Action:** `Box(-1, 1, (4,))`, scaled by the speed limits above.
+- **Observation** (46 floats): 3 tracking points per device tip, now and at the previous step, the
+  target, target minus tip, and the previous action (as in Robertshaw et al. 2024, 2025).
+- **Reward:** `-0.005 - 0.01 * Δ(geodesic distance, mm) + 1.0 on success` (the papers use 0.001 for
+  progress; set `progress_coef`).
+- **Success:** the microcatheter tip (or guidewire, via `success_device`) within 5 mm of the target
+  along the centerlines.
+- **Device model:** both devices share one track through the centerline graph; the leading device's
+  pre-curved tip picks the vessel at each bifurcation from its roll, so pushing alone never reaches the
+  carotids. It is kinematic: no wall forces, so blocked pushes stand in for contact force. A device
+  cannot enter lumen narrower than its clearance, so the catheter stops at a stenosis the wire crosses.
 
 ## Baselines and tests
 
-- `agents/scripted.py`: `ScriptedOracle` uses privileged knowledge of the route and the branch rule. It reaches 100% of targets in every tested region of 0248 (CCA, ICA, M1, A1, ECA, subclavian, vertebral) and of 0050.
-  `RandomAgent` is the lower bound.
-- **Second patient.** The whole pipeline also runs unchanged on `0024_H_AO_H`, a healthy aortic arch from another patient.
-  Its left common carotid shares an origin with the right one. The follower and the oracle reach all four branch ends 100% of the time, against 0–5% for random actions and 0% for pushing only.
-  Try it with `python scripts/plan_path.py --model 0024_H_AO_H --target LCCA@-2 --follow 20 --record`.
-- `agents/follower.py`: `TrajectoryFollower` executes planned trajectories.
-  It reaches 100% of random CCA, ICA, M1, A1 and vertebral targets on both the stenosis and the occlusion variant, at about 1.5 times the oracle's time, because it respects the speed profile.
-- `pytest -q`: 45 tests, mostly on synthetic vessel trees. They cover:
-  - env API conformance, determinism and the parser
-  - oracle success on every branch and the need for rotation
-  - START metrics
-  - planner rerouting around a narrowing for the catheter but not the wire, and A\* matching Dijkstra without penalties
-  - curvature-aware rerouting
-  - trajectory speed, acceleration and ordering limits
-  - the follower succeeding where shortest-path execution gets stuck
-  - occlusion detection
-  - the organiser interface: spaces, state layout, reward, success rule, run-folder validation, model pickling and class path, frame round trips
+- `ScriptedOracle` (privileged route and branch rule) reaches 100 % of targets in every tested region
+  of 0248 and 0050; `RandomAgent` is the lower bound.
+- `TrajectoryFollower` reaches 100 % of random CCA, ICA, M1, A1 and vertebral targets on the stenosis
+  and occlusion variants, at about 1.5× the oracle's time.
+- The pipeline also runs unchanged on a second patient, `0024_H_AO_H` (shared carotid origin): the
+  follower and oracle reach all four branch ends, against 0-5 % for random actions
+  (`python scripts/plan_path.py --model 0024_H_AO_H --target LCCA@-2 --follow 20 --record`).
+- `python -m pytest -q` runs 79 tests, mostly on synthetic vessel trees, so no downloads are needed:
+  env API, oracle and planner behaviour, trajectory limits, START metrics, safety monitor, the
+  organiser interface (spaces, state layout, reward, run folders, model pickling) and the expert.
+
+Repository layout, conventions and the hand-over invariants that tests guard are in
+[AGENTS.md](AGENTS.md).
 
 ## Data license and acknowledgement
 
