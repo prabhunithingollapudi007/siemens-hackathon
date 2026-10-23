@@ -9,6 +9,11 @@ distance to the goal and the action.
     python scripts/demo_lockstep.py                                   # runs/stroke-nav-bc-v1, visible
     python scripts/demo_lockstep.py --record results/demo_bc_policy.mp4
     python scripts/demo_lockstep.py --expert --headless --record results/demo_expert.mp4
+    python scripts/demo_lockstep.py --model runs/stroke-nav-bc-multi/final-model.zip         --goals results/lockstep/goals.json --goal-id 92        # one goal of a make_goals.py set
+
+With ``--goals`` the physics view shows the episode's goal (loaded through the page's own goal-file
+input); their fluoro viewer, the policy's input, still shows the scenario's goal marker, as in their
+stack, so the policy takes the goal from the state.
 
 Stop their Docker stack first (tools/organiser_stack.ps1 stop); it is not used.
 """
@@ -27,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from stroke_nav.agents.entry_roll import EntryRollExpert  # noqa: E402
+from stroke_nav.agents.roll_table import load_goal_set  # noqa: E402
 from stroke_nav.organiser import ensure_policy_importable  # noqa: E402
 from stroke_nav.organiser.live.lockstep import make_env  # noqa: E402
 
@@ -67,6 +73,14 @@ def compose(physics_jpeg: bytes, fluoro_jpeg: bytes | None, lines: list[str], ba
     return np.asarray(frame)
 
 
+def show_goal(page, goal_world_m) -> None:
+    """Load ``goal_world_m`` into the physics page's goal marker via its goal-file input (mesh cm)."""
+    text = ",".join(f"{v * 100.0:.5f}" for v in goal_world_m)  # cas-reference: mesh cm x 0.01 = world m
+    page.cdp.eval("(() => { const dt = new DataTransfer(); dt.items.add(new File(['" + text + "'], "
+                  "'episode_goal.txt', { type: 'text/plain' })); const i = document.getElementById('goalFileInput'); "
+                  "i.files = dt.files; i.dispatchEvent(new Event('change')); return true; })()")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default=str(ROOT / "runs" / "stroke-nav-bc-v1" / "final-model.zip"))
@@ -75,19 +89,32 @@ def main() -> None:
     ap.add_argument("--record", default=str(ROOT / "results" / "demo_bc_policy.mp4"), help=".mp4 or .gif ('' for none)")
     ap.add_argument("--fps", type=float, default=10.0, help="video frames per second (5 = real time)")
     ap.add_argument("--seed", type=int, default=2026)
+    ap.add_argument("--goals", default=None, help="goal set from scripts/make_goals.py")
+    ap.add_argument("--goal-id", type=int, default=None, help="goal id in --goals (default: the cas-reference goal)")
+    ap.add_argument("--slow-radius", type=float, default=25.0, help="expert slow-down distance (mm)")
     args = ap.parse_args()
 
+    goal = None
+    if args.goals:
+        goals = load_goal_set(args.goals, "train,test,cas")
+        goal = next((g for g in goals if g["id"] == args.goal_id), None) if args.goal_id is not None else             next(g for g in goals if g["split"] == "cas")
+        if goal is None:
+            ap.error(f"no goal with id {args.goal_id} in {args.goals}")
     if args.expert:
-        policy, name = EntryRollExpert(), "scripted expert (EntryRollExpert)"
+        policy = EntryRollExpert(roll_deg=goal["roll_deg"] if goal else 120.0, slow_radius_mm=args.slow_radius)
+        name = "scripted expert (EntryRollExpert)"
     else:
         ensure_policy_importable()
         from stable_baselines3 import SAC
 
         model, name = SAC.load(args.model, device="cpu"), f"BC policy {Path(args.model).parent.name}"
-    env = make_env(worker=0, seed=args.seed, visible=not args.headless)
+    env = make_env(worker=0, seed=args.seed, visible=not args.headless, goals=[goal["goal_m"]] if goal else None)
     bridge = env.bridge
     frames = []
     try:
+        if goal:
+            show_goal(bridge.physics, goal["goal_m"])
+            print(f"goal {goal['id']} ({goal['split']}): {goal['branch']}, entry roll {goal['roll_deg']:g} deg")
         obs, info = env.reset(seed=args.seed)
         if args.expert:
             policy.reset()
@@ -102,7 +129,8 @@ def main() -> None:
             if done:
                 banner = (f"GOAL REACHED in {step / 5:.1f} s  ({dist:.1f} mm, within 5 mm for 3 steps)" if info["success"]
                           else f"episode ended: {info.get('reset_reason')}  ({dist:.1f} mm)")
-            lines = [name, f"step {step:3d}   simulated {step / 5:5.1f} s", f"distance to goal {dist:6.1f} mm",
+            target = f"goal {goal['id']} ({goal['split']}): {goal['branch']}" if goal else "goal: cas-reference"
+            lines = [name, target, f"step {step:3d}   simulated {step / 5:5.1f} s", f"distance to goal {dist:6.1f} mm",
                      f"guidewire  in {ins:6.1f} mm  roll {rot:6.1f} deg",
                      f"action  v {act[0]:+.2f}  w {act[1]:+.2f}  (catheter {act[2]:+.2f})",
                      f"peak force {bridge.latest_true().peak_force:.3f} N"]

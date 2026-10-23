@@ -15,6 +15,12 @@ stays the expert's, so the clone also sees how to recover from small mistakes.
     python scripts/record_demos.py --episodes 4 --rolls 120 --no-save        # try the expert
     python scripts/record_demos.py --episodes 120 --workers 4 --out runs/demos/cas-ref
 
+Multiple targets (``--goals``, from ``scripts/make_goals.py``): each episode gets one goal of the
+chosen split as its goal and the expert uses that goal's entry roll; ``goal_m``, ``goal_id`` and
+``branch`` are saved with the episode.
+
+    python scripts/record_demos.py --goals results/lockstep/goals.json --split train --episodes 240         --sigmas 0,0.2,0.4 --slow-radius 8 --workers 4 --max-steps 300 --out runs/demos/multi-target
+
 Needs the organiser sources (HCMR_EV_ROOT); stop their Docker stack first so the pages get the CPU.
 """
 
@@ -33,6 +39,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from stroke_nav.agents.entry_roll import EntryRollExpert  # noqa: E402
+from stroke_nav.agents.roll_table import load_goal_set  # noqa: E402
 from stroke_nav.organiser.live.lockstep import make_env  # noqa: E402
 
 WIRE_ONLY = np.array([1.0, 1.0, 0.0, 0.0])
@@ -61,21 +68,28 @@ def run_episode(env, expert: EntryRollExpert, seed: int, sigma: float, rng: np.r
             "reason": info.get("reset_reason")}
 
 
-def worker_job(worker: int, jobs: list[dict], out: Path | None, max_steps: int | None) -> list[dict]:
-    env = make_env(worker=worker, seed=worker, max_steps=max_steps)
+def worker_job(worker: int, jobs: list[dict], out: Path | None, max_steps: int | None, goals: list | None,
+               slow_radius: float) -> list[dict]:
+    env = make_env(worker=worker, seed=worker, max_steps=max_steps, goals=goals)
     rows = []
     try:
         for job in jobs:
             t0 = time.monotonic()
-            expert = EntryRollExpert(roll_deg=job["roll"])
+            expert = EntryRollExpert(roll_deg=job["roll"], slow_radius_mm=slow_radius)
+            if "goal" in job:
+                env.goal_sampler.set_next(job["goal"]["goal_m"])
             ep = run_episode(env, expert, job["seed"], job["sigma"], np.random.default_rng(job["seed"]))
+            if "goal" in job:
+                ep.update(goal_m=np.asarray(job["goal"]["goal_m"], np.float32), goal_id=job["goal"]["id"],
+                          branch=job["goal"]["branch"])
             row = {"episode": job["episode"], "roll_deg": job["roll"], "sigma": job["sigma"], "seed": job["seed"],
+                   "goal_id": job.get("goal", {}).get("id"), "branch": job.get("goal", {}).get("branch"),
                    "success": ep["success"], "steps": ep["steps"], "reason": ep["reason"],
                    "min_dist_mm": round(float(ep["true_dist_m"].min()) * 1000, 2),
                    "final_dist_mm": round(float(ep["true_dist_m"][-1]) * 1000, 2), "wall_s": round(time.monotonic() - t0, 1)}
             if out is not None:
                 np.savez_compressed(out / f"ep_{job['episode']:04d}.npz", **{k: v for k, v in ep.items() if k != "reason"},
-                                    roll_deg=job["roll"], sigma=job["sigma"], seed=job["seed"])
+                                    roll_deg=job["roll"], sigma=job["sigma"], seed=job["seed"], slow_radius_mm=slow_radius)
             print(json.dumps(row), flush=True)
             rows.append(row)
     finally:
@@ -93,12 +107,26 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="runs/demos/cas-reference")
     ap.add_argument("--no-save", action="store_true")
+    ap.add_argument("--slow-radius", type=float, default=25.0,
+                    help="expert slows down inside this distance (mm); 8 suits goals along the whole path")
+    ap.add_argument("--goals", default=None, help="goal set from scripts/make_goals.py (overrides --rolls)")
+    ap.add_argument("--split", default="train", help="comma-separated goal splits to use (train, test, cas)")
     args = ap.parse_args()
 
     rolls = [float(r) for r in args.rolls.split(",")]
     sigmas = [float(s) for s in args.sigmas.split(",")]
-    jobs = [{"episode": i, "roll": rolls[i % len(rolls)], "sigma": sigmas[(i // len(rolls)) % len(sigmas)],
-             "seed": args.seed + i} for i in range(args.episodes)]
+    goal_set = None
+    if args.goals:
+        goal_set = load_goal_set(args.goals, args.split)
+        order = np.random.default_rng(args.seed).permutation(len(goal_set))
+        jobs = [{"episode": i, "goal": goal_set[order[i % len(goal_set)]], "sigma": sigmas[i % len(sigmas)],
+                 "seed": args.seed + i} for i in range(args.episodes)]
+        for j in jobs:
+            j["roll"] = float(j["goal"]["roll_deg"])
+        rolls = sorted({j["roll"] for j in jobs})
+    else:
+        jobs = [{"episode": i, "roll": rolls[i % len(rolls)], "sigma": sigmas[(i // len(rolls)) % len(sigmas)],
+                 "seed": args.seed + i} for i in range(args.episodes)]
     out = None
     if not args.no_save:
         out = Path(args.out)
@@ -109,13 +137,16 @@ def main() -> None:
     t0 = time.monotonic()
     with ThreadPoolExecutor(args.workers) as ex:
         parts = list(ex.map(worker_job, range(args.workers), [jobs[w::args.workers] for w in range(args.workers)],
-                            [out] * args.workers, [args.max_steps] * args.workers))
+                            [out] * args.workers, [args.max_steps] * args.workers,
+                            [[g["goal_m"] for g in goal_set] if goal_set else None] * args.workers,
+                            [args.slow_radius] * args.workers))
     rows = sorted((r for p in parts for r in p), key=lambda r: r["episode"])
     ok = [r for r in rows if r["success"]]
     print(f"\n{len(ok)}/{len(rows)} successful in {(time.monotonic() - t0) / 60:.1f} min")
-    for roll in rolls:
-        rr = [r for r in rows if r["roll_deg"] == roll]
-        print(f"  roll {roll:5.1f}: {sum(r['success'] for r in rr)}/{len(rr)} success, "
+    key = "branch" if goal_set else "roll_deg"
+    for value in sorted({r[key] for r in rows}):
+        rr = [r for r in rows if r[key] == value]
+        print(f"  {key} {value}: {sum(r['success'] for r in rr)}/{len(rr)} success, "
               f"median min distance {np.median([r['min_dist_mm'] for r in rr]):.1f} mm")
     if out is not None:
         with open(out / "episodes.jsonl", "a", encoding="utf-8") as f:

@@ -22,7 +22,7 @@ patient vessel models from the Vascular Model Repository (VMR). It contains:
 | `src/stroke_nav/data/` | VMR download (`fetch.py`, HTTP range requests), centerline graph and lumen radius (`centerline.py`), queries and target specs (`anatomy.py`) |
 | `src/stroke_nav/env/` | kinematic two-device simulator (`devices.py`) and `VesselNavEnv` (`vessel_env.py`) |
 | `src/stroke_nav/planning/` | device limits and curvature (`constraints.py`), constrained A\* (`planner.py`), speed profile, roll schedule and joint trajectory (`trajectory.py`) |
-| `src/stroke_nav/agents/` | `ScriptedOracle`, `RandomAgent`, `TrajectoryFollower`, `ClosedLoopRouteFollower` (A\* route driven only by measured tip pose; runs on both simulators), `EntryRollExpert` (roll at the entry then push, from the organiser observation; the expert for behaviour cloning) |
+| `src/stroke_nav/agents/` | `ScriptedOracle`, `RandomAgent`, `TrajectoryFollower`, `ClosedLoopRouteFollower` (A\* route driven only by measured tip pose; runs on both simulators), `EntryRollExpert` (roll at the entry then push, from the organiser observation; the expert for behaviour cloning), `RollTable` (which entry roll reaches which point, from `calibrate_rolls.py`) |
 | `src/stroke_nav/eval/` | START metrics and tables |
 | `src/stroke_nav/viz/` | pyvista scene for the playground and renders |
 | `src/stroke_nav/organiser/` | organiser compatibility: spec (device parameters, measured robot limits), frame transform, fluoro image, `OrganiserCompatEnv`, run-folder export, ROS 2 templates |
@@ -67,6 +67,9 @@ py -3.12 -m venv --system-site-packages .venv
 .venv\Scripts\python.exe scripts/train_bc.py --demos runs/demos/cas-reference --device cuda                  # behaviour-clone into the hand-over SAC model
 .venv\Scripts\python.exe scripts/eval_lockstep.py --model runs/<run_id>/final-model.zip --workers 4          # evaluate on their physics (--expert for the expert)
 .venv\Scripts\python.exe scripts/demo_lockstep.py --record results/demo_bc_policy.mp4                       # watch the policy on their pages (visible Chrome) and record it
+.venv\Scripts\python.exe scripts/calibrate_rolls.py --workers 4                                             # entry-roll sweep on their physics -> results/lockstep/roll_sweep.json
+.venv\Scripts\python.exe scripts/make_goals.py --spacing 3 --per-branch 60                                  # reachable multi-target goal set (train/test/cas)
+# multi-target demos, BC and evaluation: record_demos.py / eval_lockstep.py / demo_lockstep.py take --goals results/lockstep/goals.json --split ... (see README §5)
 ```
 
 - **Off-screen rendering** works with pyvista (`--record`). Interactive windows need a desktop session.

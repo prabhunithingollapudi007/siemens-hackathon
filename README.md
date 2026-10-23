@@ -193,6 +193,47 @@ powershell -ExecutionPolicy Bypass -File tools\organiser_stack.ps1 start -Visibl
 - `--fps 5` records at real time (the default of 10 is 2×).
 - `--record ""` skips the video.
 
+**Multiple targets (experimental).** The same pipeline for goals anywhere the entry roll can reach:
+
+```bash
+python scripts/calibrate_rolls.py --workers 4                    # roll sweep, 24 rolls x 2 seeds, ~15 min
+python scripts/make_goals.py --spacing 3 --per-branch 60          # 168 goals: 134 train, 33 test, + cas-reference
+python scripts/record_demos.py --goals results/lockstep/goals.json --split train --episodes 268 \
+    --sigmas 0,0.2,0.4 --slow-radius 8 --workers 4 --max-steps 300 --out runs/demos/multi-target
+python scripts/train_bc.py --demos runs/demos/multi-target --successful-only --epochs 40 --device cuda --run-id stroke-nav-bc-multi
+python scripts/eval_lockstep.py --model runs/stroke-nav-bc-multi/final-model.zip --goals results/lockstep/goals.json \
+    --split test --episodes 33 --workers 4 --max-steps 300
+python scripts/demo_lockstep.py --model runs/stroke-nav-bc-multi/final-model.zip --goals results/lockstep/goals.json --goal-id 153
+```
+
+How it works:
+- `calibrate_rolls.py` records the tip path of each entry roll.
+- `RollTable` (`src/stroke_nav/agents/roll_table.py`) counts a point as reachable when every seed's
+  path for some roll passes within 3 mm of it.
+- `make_goals.py` samples such points by branch and splits them into train and test.
+- The expert uses each goal's roll. It slows only in the last 8 mm: with the 25 mm default it missed
+  one goal by 15 mm, because a slower push can change which branch the rod takes.
+- `make_env(goals=...)` gives their env a `GoalSet`, whose `set_next` picks each episode's goal.
+
+The fluoro image still shows the scenario's goal marker, as in their stack, so the policy reads the
+goal from the state.
+
+Results so far (2026-10-23):
+- **Expert:** 144 of 167 recorded demos succeeded (86%). The failures are near misses that do not
+  hold for 3 steps, and deep right-carotid goals where the stop sends the rod into another branch.
+- **BC policy** (`stroke-nav-bc-multi`, on the 144 successful demos): validation action MSE 0.020,
+  against 0.005 for the single-goal model. **6 of 16** held-out goals reached before the evaluation
+  was stopped; the cas-reference split was not run.
+  - The 6 successes: 5 aorta goals and left-carotid goal 70.
+  - Shallow aorta goals (40-72 mm in): it passed within about 5 mm, then pushed on to the end of
+    travel.
+  - Left carotid and left subclavian goals: it chose the wrong entry roll. Goal 82 needs 345° and got
+    about -168°.
+
+It learned the push, not the choice of roll or when to stop. Hand over `stroke-nav-bc-v1` (8/8 on
+the cas-reference goal). `scripts/finetune_sac_lockstep.py` (SAC fine-tuning from a BC model) is
+written but has not been run.
+
 **In our simulator.** `src/stroke_nav/organiser/` reproduces their action and observation spaces,
 reward, success rule, noise, device parameters, scenario and SAC settings on our kinematic simulator,
 with a fitted transform to their world frame (median 0.45 mm). Policies trained this way are a warm

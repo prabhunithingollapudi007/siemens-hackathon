@@ -633,19 +633,45 @@ class LockstepBridge:
 
 
 # ---------------------------------------------------------------------- env
-def make_env(worker: int = 0, seed: int = 0, goal_world_m=None, max_steps: int | None = None, visible: bool = False):
-    """Their ``OpenNG3Env`` on a ``LockstepBridge``; goals from the cas-reference scenario unless
-    ``goal_world_m`` (world metres) is given. Configuration as ``HCMR-EV-RL/configs/online_rl.json``.
-    ``visible`` shows both pages in Chrome windows instead of running them headless."""
-    env_mod, action, goal, scenario = (organiser_rl(m) for m in ("env", "action", "goal", "scenario"))
+class GoalSet:
+    """Goal sampler for their ``OpenNG3Env`` (world metres): the goal given to ``set_next`` for the
+    next reset, otherwise one of ``goals`` drawn uniformly with the env's RNG. The fluoro image still
+    shows the scenario's goal marker; the episode's goal reaches the policy only through the state."""
+
+    def __init__(self, goals):
+        self.goals = [np.asarray(g, dtype=np.float64) for g in goals]
+        if not self.goals:
+            raise ValueError("GoalSet needs at least one goal")
+        self.next: np.ndarray | None = None
+        self.last_source_goal: np.ndarray | None = None
+
+    def set_next(self, goal_world_m) -> None:
+        self.next = np.asarray(goal_world_m, dtype=np.float64)
+
+    def sample(self, rng: np.random.Generator, origin: np.ndarray | None = None) -> np.ndarray:
+        del origin
+        goal = self.next if self.next is not None else self.goals[int(rng.integers(len(self.goals)))]
+        self.next = None
+        self.last_source_goal = goal.copy()
+        return goal.copy()
+
+
+def make_env(worker: int = 0, seed: int = 0, goal_world_m=None, max_steps: int | None = None, visible: bool = False,
+             goals=None):
+    """Their ``OpenNG3Env`` on a ``LockstepBridge``. Goals: the cas-reference scenario's (their
+    ``ScenarioGoalSampler``) unless ``goal_world_m`` or a list ``goals`` (world metres) is given; then
+    ``env.goal_sampler`` is a ``GoalSet`` whose ``set_next`` picks the next episode's goal.
+    Configuration as ``HCMR-EV-RL/configs/online_rl.json``. ``visible`` shows both pages in Chrome
+    windows instead of running them headless."""
+    env_mod, action, scenario = (organiser_rl(m) for m in ("env", "action", "scenario"))
     e = DEFAULT_SPEC.environment
     a = DEFAULT_SPEC.action
     # one asset server per worker: it holds a single "authoritative" page session, so workers sharing
     # one got each other's mesh-to-world transform (wrong goals, every episode failed)
     bridge = LockstepBridge(worker=worker, seed=seed, ports=Ports(web=8100 + 10 * worker, asset=8102 + 10 * worker),
                             visible=visible)
-    if goal_world_m is not None:
-        sampler = goal.FixedGoal(tuple(float(v) for v in goal_world_m))
+    if goals is not None or goal_world_m is not None:
+        sampler = GoalSet(goals if goals is not None else [goal_world_m])
     else:  # their training: ScenarioGoalSampler with the physics page's acknowledged transform
         auth = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{bridge.ports.asset}/authoritative", timeout=5).read())
         sc = scenario.load_scenario(DEFAULT_SPEC.scenario_name, (RL_ROOT / "scenarios").resolve())

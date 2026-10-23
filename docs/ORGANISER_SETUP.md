@@ -337,6 +337,22 @@ mm inserted), and in the roll sweep the wire turned to 120° at the entry and pu
 (180-330°), left subclavian @10-50 and left vertebral @10-30 (0-30°, 270°). Re-steering at each
 bifurcation from the measured tip direction (the A* follower below) does not work there.
 
+**Roll sweep in lockstep (2026-10-23, `scripts/calibrate_rolls.py`).** The same sweep on their
+physics in the lockstep env (0-345° every 15°, roll then push to the end of travel, two noise seeds).
+The seeds agree within 0.3 mm almost everywhere, so the outcome is repeatable. Final branch:
+
+| Entry roll | Ends in |
+|---|---|
+| 0° | left subclavian |
+| 15-30° | left vertebral (45°: one seed left vertebral, one left carotid) |
+| 60-75°, 300-345° | left carotid |
+| 90-150° | right carotid, passing the right external carotid |
+| 165-285° | aorta |
+
+180-240° stays in the aorta here, but entered the left carotid in the live sweep above. There, the
+rod lagged the wall-clock robot (0.18× real time), so lockstep is the reference. The
+cas-reference goal lies about 3.1 mm off every 90-150° path, against the wall.
+
 **Real-time speed on this laptop (2026-10-23).** With their whole stack running, the physics solve
 takes about 65 ms per frame (11 frames/s, 0.18× real time) and states and images arrive at 3.3 Hz.
 Their env's readiness check needs at least 4.5 Hz of images, so `OpenNG3Env` refuses to start. Their
