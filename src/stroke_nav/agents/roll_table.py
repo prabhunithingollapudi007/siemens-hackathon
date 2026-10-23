@@ -89,6 +89,10 @@ class RollTable:
                 step = min(np.diff(self.rolls)) if n > 1 else 0.0
                 # runs over the sorted rolls, allowing a gap of one grid step and the wrap at +-180 / 360
                 best, run = [], []
+
+                def score(r):  # longer arc first; among equal arcs the one whose rolls miss least
+                    return (len(r), -float(np.mean([misses[j % n][0] for j in r])))
+
                 for i in range(2 * n):
                     k = i % n
                     if good[k] and (not run or (i == run[-1] + 1 and
@@ -96,10 +100,14 @@ class RollTable:
                         run.append(i)
                     else:
                         run = [i] if good[k] else []
-                    if len(run) > len(best):
+                    if not best or score(run) > score(best):
                         best = list(run)
                 best = best[:n]
-                k = best[len(best) // 2] % n  # the middle of the arc (the later middle for even lengths)
+                # inside the arc (its edges are where a slightly different executed roll takes another
+                # branch), the roll whose recorded paths pass closest; ties (within 0.5 mm) go to the centre
+                interior = best[1:-1] if len(best) > 2 else best
+                centre = len(best) // 2
+                k = min(interior, key=lambda j: (round(misses[j % n][0] * 2.0) / 2.0, abs(best.index(j) - centre))) % n
                 return self.rolls[k], misses[k][0]
         miss, roll = min(misses)
         return roll, miss

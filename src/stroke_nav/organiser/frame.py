@@ -198,3 +198,44 @@ def write_goals_txt(path: str | Path, goals_obj_cm: np.ndarray, comment: str = "
     lines += [",".join(f"{v:.3f}" for v in g) for g in np.atleast_2d(goals_obj_cm)]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+# ---------------------------------------------------------------------- frames for other meshes
+def entry_frame(anat, start: int | None = None, meta: dict | None = None) -> "OrganiserFrame":
+    """A frame that places a VMR model the way the organiser's physics page expects an *authored*
+    mesh: the insertion entrance (the default start node) at the origin and the vessel axis there
+    along +Z, since their wire is built on the -Z side and pushed in along +Z. Everything else about
+    the placement is arbitrary (the roll about Z is chosen so the model's +Y stays as upright as it can).
+
+    Relation as for the fitted 0248 frame: ``vmr_cm = M @ obj_cm + t_cm``; ``world_m = 0.01 * obj_cm``.
+    """
+    start = anat.default_start() if start is None else int(start)
+    p0_cm = np.asarray(anat.nodes[start], dtype=np.float64) / 10.0
+    nb = list(anat.neighbors[start])
+    z = np.asarray(anat.forward_direction(start, nb[0]), dtype=np.float64)
+    z /= np.linalg.norm(z)
+    up = np.array([0.0, 1.0, 0.0])
+    if abs(np.dot(up, z)) > 0.9:
+        up = np.array([1.0, 0.0, 0.0])
+    x = np.cross(up, z)
+    x /= np.linalg.norm(x)
+    y = np.cross(z, x)
+    R = np.vstack([x, y, z])  # rows: obj axes expressed in VMR coordinates -> obj = R @ (vmr - p0)
+    frame = OrganiserFrame(M=_orthonormal(R.T), t_cm=p0_cm, meta={"source": f"entry frame of {anat.name}: start node {start} at the origin, "
+                                                                  "vessel axis +Z (authored bake)", **(meta or {})})
+    return frame
+
+
+def frame_path(model: str, processed_dir: str | Path = "data/processed") -> Path:
+    return Path(processed_dir) / f"organiser_frame_{model}.json"
+
+
+def frame_for(model: str, processed_dir: str | Path = "data/processed") -> "OrganiserFrame":
+    """The organiser frame of a model: the fitted one for 0248 (``default_frame``), else the entry
+    frame saved by ``scripts/make_scenario.py`` (``organiser_frame_<model>.json``)."""
+    if model == "0248_H_AOCERE_CAS":
+        return default_frame(processed_dir)
+    p = frame_path(model, processed_dir)
+    if not p.is_file():
+        raise FileNotFoundError(f"no organiser frame for {model} at {p}: run scripts/make_scenario.py --model {model} first")
+    return OrganiserFrame.load(p)

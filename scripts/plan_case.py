@@ -53,7 +53,7 @@ from stroke_nav.agents.entry_roll import EntryRollExpert  # noqa: E402
 from stroke_nav.agents.roll_table import RollTable  # noqa: E402
 from stroke_nav.agents.route_follower import ClosedLoopRouteFollower, FollowerParams, TipObs  # noqa: E402
 from stroke_nav.data.anatomy import Anatomy  # noqa: E402
-from stroke_nav.organiser.frame import default_frame  # noqa: E402
+from stroke_nav.organiser.frame import frame_for  # noqa: E402
 from stroke_nav.organiser.spec import DEFAULT_SPEC  # noqa: E402
 from stroke_nav.planning.candidates import (Candidate, EpisodeTrace, assess, plot_candidates, summary_table,  # noqa: E402
                                             write_trajectory_csv)
@@ -170,13 +170,13 @@ def main() -> None:
                 log(f"killed {n} stray lockstep Chrome processes")
 
     # ------------------------------------------------------------------ the case: target, route, reachability
-    anat, frame = Anatomy.load(args.model, args.variant), default_frame()
+    anat, frame = Anatomy.load(args.model, args.variant), frame_for(args.model)
     t0 = time.monotonic()
     goal_vmr, node, plan, cath_limit = build(anat, frame, args.target)
     env_kwargs: dict = {"visible": True} if args.visible else {}
     if args.visible:
         args.workers = 1
-    if args.variant and needs_theirs:
+    if (args.variant or args.model != "0248_H_AOCERE_CAS") and needs_theirs:
         from stroke_nav.organiser.scenario import DEFAULT_SCENARIO_ROOT, scenario_name, write_scenario
 
         if "sac" in methods:

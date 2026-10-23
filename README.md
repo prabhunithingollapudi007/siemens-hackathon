@@ -25,6 +25,8 @@ their physics view on the left and the policy's fluoro input on the right (`resu
 
 | Demo | Runs on | Result |
 |---|---|---|
+| New mesh `0024_H_AO_H` (aortic arch), target `RSA@10`: A\* route + calibrated entry roll, 20 min from the VMR model to the result | organiser's physics on the new mesh | **reached in 11.6 s**, 1.1 mm |
+| Same mesh and target, behaviour-cloned policy from 12 demonstrations (2 min of training) | organiser's physics on the new mesh | **reached in 12.8 s**, 1.6 mm; passes the hand-over check |
 | A\* route + calibrated entry roll on the organiser's own cas-reference goal | organiser's physics | **reached in 28.8 s**, 4.0 mm |
 | Behaviour-cloned policy on that goal (24 demonstrations of the route, 10 min of training) | organiser's physics | **reached in 29.4 s**, 4.1 mm; passes the hand-over check |
 | A\* route + calibrated entry roll, 70 % left ICA lesion (`10Right70Left`, `left_carotid@140`) | organiser's physics | **reached in 27 s**, 1.8 mm from the lesion, peak force 5 mN |
@@ -50,7 +52,18 @@ python scripts/demo_lockstep.py --target scenario --expert --slow-radius 8 --rec
 python scripts/demo_lockstep.py --target scenario --model results/cases/cas-reference/runs/bc/final-model.zip --record results/cases/cas-reference/bc.mp4   # video: the clone on their goal
 ```
 
-Details and the full tables: [docs/PLANNER.md](docs/PLANNER.md) and [docs/CASE_PLANNING.md](docs/CASE_PLANNING.md).
+A new mesh and target (the recipe in [docs/NEW_MESH.md](docs/NEW_MESH.md), about 20 minutes end to end):
+
+```bash
+python scripts/fetch_data.py --model 0024_H_AO_H                                               # VMR model -> centerlines
+python scripts/make_scenario.py --model 0024_H_AO_H --target RSA@10                           # frame + their scenario + route length
+python scripts/calibrate_rolls.py --model 0024_H_AO_H --rolls 0:360:30 --seeds 1 --workers 4    # which entry roll reaches which vessel, ~5 min
+python scripts/plan_case.py --model 0024_H_AO_H --target RSA@10 --case-id 0024-rsa10 --table results/lockstep/roll_sweep_0024_H_AO_H.json --methods astar,roll,bc --bc-demos 12 --sigmas 0,0.2 --eval-episodes 1
+python scripts/demo_lockstep.py --vmr-model 0024_H_AO_H --target RSA@10 --expert --slow-radius 8 --record results/cases/0024-rsa10/astar_roll.mp4
+python scripts/demo_lockstep.py --vmr-model 0024_H_AO_H --target RSA@10 --model results/cases/0024-rsa10/runs/bc/final-model.zip --record results/cases/0024-rsa10/bc.mp4
+```
+
+Details and the full tables: [docs/PLANNER.md](docs/PLANNER.md), [docs/CASE_PLANNING.md](docs/CASE_PLANNING.md) and [docs/NEW_MESH.md](docs/NEW_MESH.md).
 
 ## Setup (Windows, Python 3.12)
 

@@ -33,8 +33,11 @@ FAR_GOAL_M = (1.0, 1.0, 1.0)  # never reached, so their success rule does not en
 MAX_STEPS = 240
 
 
+ENV_KWARGS: dict = {}
+
+
 def sweep(worker: int, jobs: list[dict]) -> list[dict]:
-    env = make_env(worker=worker, seed=worker, goals=[FAR_GOAL_M], max_steps=MAX_STEPS)
+    env = make_env(worker=worker, seed=worker, goals=[FAR_GOAL_M], max_steps=MAX_STEPS, **ENV_KWARGS)
     travel = DEFAULT_SPEC.robot.guidewire_travel_mm
     out = []
     try:
@@ -64,8 +67,21 @@ def main() -> None:
     ap.add_argument("--rolls", default="0:360:15", help="start:stop:step or a comma-separated list (deg)")
     ap.add_argument("--seeds", type=int, default=2)
     ap.add_argument("--workers", type=int, default=4)
-    ap.add_argument("--out", default=str(ROOT / "results" / "lockstep" / "roll_sweep.json"))
+    ap.add_argument("--out", default=None, help="default results/lockstep/roll_sweep.json (0248) or roll_sweep_<model>.json")
+    ap.add_argument("--model", default="0248_H_AOCERE_CAS", help="VMR model; other models run their scenario from scripts/make_scenario.py")
+    ap.add_argument("--variant", default=None)
     args = ap.parse_args()
+    global ENV_KWARGS
+    if args.model != "0248_H_AOCERE_CAS" or args.variant:
+        from stroke_nav.organiser.scenario import DEFAULT_SCENARIO_ROOT, scenario_name
+
+        name = scenario_name(args.model, args.variant)
+        if not (Path(DEFAULT_SCENARIO_ROOT) / name / "scenario.json").is_file():
+            raise SystemExit(f"scenario {name} not found: run scripts/make_scenario.py --model {args.model} first")
+        ENV_KWARGS = {"scenario_name": name, "scenario_root": Path(DEFAULT_SCENARIO_ROOT).resolve()}
+    if args.out is None:
+        tag = "" if args.model == "0248_H_AOCERE_CAS" and not args.variant else f"_{name}"
+        args.out = str(ROOT / "results" / "lockstep" / f"roll_sweep{tag}.json")
     if ":" in args.rolls:
         a, b, c = (float(v) for v in args.rolls.split(":"))
         rolls = list(np.arange(a, b, c))
@@ -82,9 +98,9 @@ def main() -> None:
     print(f"\n{len(paths)} paths in {(time.monotonic() - t0) / 60:.1f} min -> {out}")
 
     from stroke_nav.data.anatomy import Anatomy
-    from stroke_nav.organiser.frame import default_frame
+    from stroke_nav.organiser.frame import frame_for
 
-    anat, frame = Anatomy.load("0248_H_AOCERE_CAS"), default_frame()
+    anat, frame = Anatomy.load(args.model, args.variant), frame_for(args.model)
     for p in paths:
         tip = frame.world_m_to_vmr_mm(np.asarray(p["tip_m"][-1]))
         print(f"  roll {p['roll_deg']:5.1f} seed {p['seed']}: ends in {anat.branch_of(anat.nearest_node(tip))}")

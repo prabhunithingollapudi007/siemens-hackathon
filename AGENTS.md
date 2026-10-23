@@ -79,6 +79,7 @@ py -3.12 -m venv --system-site-packages .venv
 .venv\Scripts\python.exe scripts/run_dagger.py --goals results/lockstep/goals_signed.json --init runs/demos/signed-expert --betas 0.3,0   # DAgger rounds with RecoveringExpert
 .venv\Scripts\python.exe scripts/plan_case.py --target right_carotid@40 --case-id rca40                   # one patient target, candidate trajectories from every method under budgets -> results/cases/rca40/ (docs/CASE_PLANNING.md)
 .venv\Scripts\python.exe scripts/demo_astar_costs.py --visible                                              # A* with length/time/damage costs on the ICA lesions of two stenosis variants, executed on their physics (docs/PLANNER.md)
+.venv\Scripts\python.exe scripts/make_scenario.py --model 0024_H_AO_H --target RSA@10                      # a new mesh for their physics: entry frame + scenario (docs/NEW_MESH.md); then calibrate_rolls.py --model, plan_case.py --model, demo_lockstep.py --vmr-model
 .venv\Scripts\python.exe scripts/demo_lockstep.py --variant 10Right70Left --target left_carotid@140 --expert --slow-radius 8 --record results/astar_demo/video.mp4   # video on their physics, variant mesh
 ```
 

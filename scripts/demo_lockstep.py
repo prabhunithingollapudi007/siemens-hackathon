@@ -89,19 +89,21 @@ def main() -> None:
     ap.add_argument("--target", default=None, help="target spec (branch@mm, xyz:...) on the variant; the entry roll comes from the calibrated table")
     ap.add_argument("--roll", type=float, default=None, help="entry roll for the expert (deg); default: the table's robust roll for --target")
     ap.add_argument("--max-steps", type=int, default=None)
+    ap.add_argument("--vmr-model", default="0248_H_AOCERE_CAS", help="VMR model of --target (other models: their scenario from make_scenario.py)")
+    ap.add_argument("--table", default=None, help="entry-roll sweep file(s) (default: the model's)")
     args = ap.parse_args()
 
     env_kwargs, route_line = {}, None
     if args.variant or args.target:
         from stroke_nav.agents.roll_table import RollTable
         from stroke_nav.data.anatomy import Anatomy
-        from stroke_nav.organiser.frame import default_frame
+        from stroke_nav.organiser.frame import frame_for
         from stroke_nav.organiser.scenario import DEFAULT_SCENARIO_ROOT, scenario_name, write_scenario
         from stroke_nav.planning.constraints import GUIDEWIRE
         from stroke_nav.planning.planner import PathPlanner, PlannerWeights
 
-        model_name = "0248_H_AOCERE_CAS"
-        anat, frame = Anatomy.load(model_name, args.variant), default_frame()
+        model_name = args.vmr_model
+        anat, frame = Anatomy.load(model_name, args.variant), frame_for(model_name)
         scenario_goal = args.target in (None, "scenario")
         if scenario_goal:  # the organiser's own goal (cas-reference goals.txt), exactly as their env samples it
             from stroke_nav.organiser.spec import CAS_REFERENCE_GOALS_CM
@@ -115,12 +117,17 @@ def main() -> None:
         route_line = f"A* route: {' > '.join(plan.branches())} ({plan.length_mm:.0f} mm, ~{plan.costs['est_time_s']:.0f} s)" if plan.feasible else "A*: no route"
         roll = args.roll
         if roll is None:
-            files = [f for f in (ROOT / "results" / "lockstep" / "roll_sweep.json", ROOT / "results" / "lockstep" / "roll_sweep_neg.json") if f.exists()]
+            default_tables = ((ROOT / "results" / "lockstep" / "roll_sweep.json", ROOT / "results" / "lockstep" / "roll_sweep_neg.json")
+                              if model_name == "0248_H_AOCERE_CAS" and not args.variant else
+                              (ROOT / "results" / "lockstep" / f"roll_sweep_{scenario_name(model_name, args.variant)}.json",))
+            files = [Path(f) for f in (args.table.split(",") if args.table else default_tables) if Path(f).exists()]
+            if not files:
+                ap.error(f"no entry-roll table for {model_name}: run calibrate_rolls.py --model {model_name} or pass --roll")
             roll, miss = RollTable.load(",".join(map(str, files))).reach(frame.vmr_mm_to_world_m(goal_vmr), robust_within_mm=5.0)
             print(f"entry roll {roll:g} deg from the calibrated table (recorded paths miss the target by {miss:.1f} mm)")
         goal = {"id": 0, "split": args.variant or "base", "branch": anat.branch_of(node), "roll_deg": roll,
                 "goal_m": frame.vmr_mm_to_world_m(goal_vmr).tolist(), "scenario_goal": scenario_goal}
-        if args.variant:
+        if args.variant or model_name != "0248_H_AOCERE_CAS":
             name = scenario_name(model_name, args.variant)
             if not (Path(DEFAULT_SCENARIO_ROOT) / name / "scenario.json").is_file():
                 write_scenario(model_name, args.variant, [goal_vmr], DEFAULT_SCENARIO_ROOT, frame)

@@ -69,11 +69,29 @@ class EntryRollExpert:
             return a
         if self.hold_roll and abs(err) > math.radians(3 * self.roll_tol_deg):
             a[1] = np.clip(err / RAD_PER_STEP, -0.5, 0.5)
-        self.best_mm = min(self.best_mm, dist_mm)
         if dist_mm <= self.stop_radius_mm:
+            self.phase = "push"
             return a  # hold in the goal
+        if self.phase == "backoff":
+            # passed the goal: pull back while the distance still shrinks (the rod's slack means the tip
+            # lags the robot), then creep in again; a plain reversal oscillated 8-11 mm from the goal
+            if dist_mm < self.last_mm - 0.05:
+                self.last_mm = dist_mm
+                a[0] = -0.5
+                return a
+            self.phase, self.best_mm = "creep", dist_mm
+        if self.phase == "creep":
+            if dist_mm > self.best_mm + self.overshoot_mm:
+                self.phase, self.last_mm = "backoff", dist_mm
+                a[0] = -0.5
+                return a
+            self.best_mm = min(self.best_mm, dist_mm)
+            a[0] = self.min_push
+            return a
+        self.best_mm = min(self.best_mm, dist_mm)
         if dist_mm > self.best_mm + self.overshoot_mm and self.best_mm < self.slow_radius_mm:
-            a[0] = -self.min_push  # passed the goal: back off slowly
+            self.phase, self.last_mm = "backoff", dist_mm
+            a[0] = -0.5
             return a
         a[0] = np.clip(dist_mm / self.slow_radius_mm, self.min_push, 1.0)
         return a
