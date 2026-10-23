@@ -157,6 +157,42 @@ python scripts/eval_lockstep.py --model runs/stroke-nav-bc-v1/final-model.zip --
 python scripts/demo_lockstep.py --record results/demo_bc_policy.mp4                          # watch and record
 ```
 
+Where the policy's behaviour comes from:
+
+1. **A measurement on their physics.** On their rod, the roll set at the entry decides which vessel
+   the guidewire ends up in; 120° and a 260 mm push reach the right external carotid, where the
+   cas-reference goal is (docs/ORGANISER_SETUP.md §12).
+2. **A scripted expert.** `EntryRollExpert` (`src/stroke_nav/agents/entry_roll.py`) turns that into a
+   controller: roll to 120°, push, slow down within 25 mm of the goal, stop there; the catheter stays
+   at home. It reads only the policy's own 43-value noisy state, with no privileged information.
+3. **Demonstrations.** `record_demos.py` runs the expert in the lockstep env and saves, per step, the
+   fluoro image, the state and the expert's action (`runs/demos/cas-reference`, 60 episodes, all
+   successful). In 40 of them Gaussian noise (σ 0.2 or 0.4) is added to the executed action while
+   the label stays the expert's (DART), so the clone also sees how to recover from small mistakes.
+4. **Behaviour cloning.** `train_bc.py` fits the actor of an ordinary SB3 SAC model with their
+   `FluoroStateExtractor` to the expert labels (MSE; 40 epochs on 8,587 samples, about 30 s). It
+   warm-starts the critic from the Monte-Carlo returns so SAC fine-tuning can follow; the model loads
+   in their stack unchanged.
+
+There is no reward-based learning and no A\* in this pipeline. Their scenario has a single goal, so
+the policy has only learned the cas-reference target.
+
+To watch the policy, stop their Docker stack first; it is not used, and the pages need the CPU. Two
+Chrome windows open: their physics page and their noisy fluoro viewer (the policy's camera input).
+
+```bash
+powershell -ExecutionPolicy Bypass -File tools\organiser_stack.ps1 stop
+python scripts/demo_lockstep.py --record results/demo_bc_policy.mp4
+powershell -ExecutionPolicy Bypass -File tools\organiser_stack.ps1 start -Visible   # their stack again afterwards
+```
+
+`demo_lockstep.py` options:
+- `--headless` records without showing the windows.
+- `--expert` runs the scripted teacher instead of the policy.
+- `--seed N` changes the noise seed.
+- `--fps 5` records at real time (the default of 10 is 2×).
+- `--record ""` skips the video.
+
 **In our simulator.** `src/stroke_nav/organiser/` reproduces their action and observation spaces,
 reward, success rule, noise, device parameters, scenario and SAC settings on our kinematic simulator,
 with a fitted transform to their world frame (median 0.45 mm). Policies trained this way are a warm
