@@ -11,13 +11,18 @@ train_bc.py trains on manual demos, scripted ones, or both (--demos a,b).
     python scripts/teleop_lockstep.py --goals results/lockstep/manual_goals.json --goal-id 1 --out runs/demos/manual
     python scripts/teleop_lockstep.py --goals ... --headless --keys "d*10,w,_*140"     # scripted keys (testing)
 
-Keys, in the teleop window:
+Keys, in the teleop window (it must have the focus):
 
-    W / S        push / pull the guidewire (stays on)        Space   stop pushing or pulling
-    A / D        turn the guidewire one control step (11.5 deg at full speed) per press; hold to keep turning
-    1 / 2 / 3    speed 25 / 50 / 100 %
-    Enter        end the episode and save it                 Backspace  end it and discard it
-    Esc          quit (the current episode is discarded)
+    W / S (or Up / Down)       hold to push / pull the guidewire
+    A / D (or Left / Right)    hold to turn it (11.5 deg per 0.2 s step at full speed)
+    1 / 2 / 3                  speed 25 / 50 / 100 %
+    Enter                      end the episode and save it
+    Backspace                  end it and discard it
+    Esc                        quit (the current episode is discarded)
+
+The wire moves only while a key is held: on Windows the window reads the key state itself
+(GetAsyncKeyState). Elsewhere, or with --keys, keys are events: W / S latch a push or pull until
+Space, and each A / D press turns one step.
 
 The episode also ends, and is saved, on their success rule (within 5 mm of the goal for 3 steps)
 or at --max-steps. On their rod the entry roll picks the branch: turn first, then push (the goal
@@ -47,16 +52,21 @@ ENTER, BACKSPACE, ESC = (13, 10), (8,), (27,)
 
 
 class Teleop:
-    """Keyboard state -> organiser action ``[v_guidewire, w_guidewire, 0, 0]`` in [-1, 1]."""
+    """Keyboard -> organiser action ``[v_guidewire, w_guidewire, 0, 0]`` in [-1, 1].
 
-    max_turn_queue = 40
+    With ``held`` keys (hold mode) the action follows the keys held during the step. Without them
+    (event mode) W / S latch a push or pull and each A / D press queues one turning step; the queue
+    is short so a held, auto-repeating key does not keep the wire turning long after release.
+    """
+
+    max_turn_queue = 5
 
     def __init__(self):
         self.push = 0  # +1 push, -1 pull, 0 hold
         self.speed = 1.0
         self.turn = 0  # queued rotation steps, signed
 
-    def handle(self, key: int) -> str | None:
+    def handle(self, key: int, hold_mode: bool = False) -> str | None:
         """Apply one key code; returns "save", "discard" or "quit" when the episode should end."""
         if key in ENTER:
             return "save"
@@ -65,6 +75,8 @@ class Teleop:
         if key in ESC:
             return "quit"
         c = chr(key).lower() if 0 <= key < 256 else ""
+        if hold_mode and c in ("w", "s", " ", "a", "d"):
+            return None  # motion comes from the held keys
         if c == "w":
             self.push = 1
         elif c == "s":
@@ -77,14 +89,20 @@ class Teleop:
             self.speed = {"1": 0.25, "2": 0.5, "3": 1.0}[c]
         return None
 
-    def action(self) -> np.ndarray:
-        w = float(np.sign(self.turn))
-        self.turn -= int(w)
+    def action(self, held: set[str] | None = None) -> np.ndarray:
+        if held is not None:
+            self.push = int("w" in held) - int("s" in held)
+            w = float(int("d" in held) - int("a" in held))
+        else:
+            w = float(np.sign(self.turn))
+            self.turn -= int(w)
+        self.last_turn = w
         return np.array([self.push * self.speed, w * self.speed, 0.0, 0.0], dtype=np.float32)
 
     def describe(self) -> str:
         move = {1: "push", -1: "pull", 0: "hold"}[self.push]
-        return f"{move}  speed {self.speed * 100:.0f}%  turn queue {self.turn:+d}"
+        turn = {1.0: "turn +", -1.0: "turn -", 0.0: "no turn"}[getattr(self, "last_turn", 0.0)]
+        return f"{move}  {turn}  speed {self.speed * 100:.0f}%"
 
 
 class ScriptedKeys:
@@ -97,9 +115,9 @@ class ScriptedKeys:
             code = {"space": ord(" "), "enter": 13, "_": None}.get(key.lower(), ord(key[0]) if key else None)
             self.steps += [[code] if code is not None else [] for _ in range(int(n) if n else 1)]
 
-    def poll(self, deadline: float) -> list[int]:
+    def poll(self, deadline: float) -> tuple[list[int], None]:
         del deadline
-        return self.steps.pop(0) if self.steps else [13]
+        return (self.steps.pop(0) if self.steps else [13]), None
 
     def show(self, image: np.ndarray) -> None:
         pass
@@ -108,27 +126,51 @@ class ScriptedKeys:
         pass
 
 
+HOLD_KEYS = {"w": (0x57, 0x26), "s": (0x53, 0x28), "a": (0x41, 0x25), "d": (0x44, 0x27)}  # letter, arrow
+
+
 class WindowKeys:
-    """An OpenCV window that shows the operator view and collects key presses."""
+    """An OpenCV window that shows the operator view and collects key presses; on Windows it also
+    reads which motion keys are held, while the window has the focus."""
 
     def __init__(self, title: str = "teleop"):
         import cv2
 
         self.cv2, self.title = cv2, title
         cv2.namedWindow(title, cv2.WINDOW_AUTOSIZE)
+        self.user32 = None
+        if sys.platform == "win32":
+            import ctypes
+
+            self.user32 = ctypes.windll.user32
+
+    @property
+    def hold_mode(self) -> bool:
+        return self.user32 is not None
 
     def show(self, image: np.ndarray) -> None:
         self.cv2.imshow(self.title, image)
 
-    def poll(self, deadline: float) -> list[int]:
-        keys = []
+    def _held(self) -> set[str]:
+        u = self.user32
+        if u.GetForegroundWindow() != u.FindWindowW(None, self.title):
+            return set()  # keys typed into another window do not drive the robot
+        return {k for k, vks in HOLD_KEYS.items() if any(u.GetAsyncKeyState(vk) & 0x8000 for vk in vks)}
+
+    def poll(self, deadline: float) -> tuple[list[int], set[str] | None]:
+        """Key events until ``deadline``, and (hold mode) every motion key held at some point then."""
+        keys, held = [], set() if self.hold_mode else None
         while True:
+            if held is not None:
+                held |= self._held()
             left_ms = int((deadline - time.monotonic()) * 1000)
-            k = self.cv2.waitKeyEx(max(1, left_ms))
+            k = self.cv2.waitKeyEx(max(1, min(left_ms, 15)))
             if k != -1:
                 keys.append(k & 0xFFFF if k > 0xFFFF else k)
             elif left_ms <= 1:
-                return keys
+                if held is not None:
+                    held |= self._held()
+                return keys, held
 
     def close(self) -> None:
         self.cv2.destroyWindow(self.title)
@@ -203,13 +245,15 @@ def main() -> None:
                             f"distance to goal {seen:6.1f} mm (observed)",
                             f"guidewire in {float(obs['state'][GW_INSERTION]) * 1000:6.1f} mm   roll {math.degrees(rot):7.1f} deg",
                             f"command: {ctl.describe()}",
-                            "W/S push/pull  Space stop  A/D turn  1/2/3 speed",
+                            ("hold W/S push/pull, hold A/D turn, 1/2/3 speed" if getattr(keys, "hold_mode", False)
+                             else "W/S push/pull  Space stop  A/D turn  1/2/3 speed"),
                             "Enter save   Backspace discard   Esc quit"]))
-                    for k in keys.poll(t_step + STEP_S):
-                        end = ctl.handle(k) or end
+                    events, held = keys.poll(t_step + STEP_S)
+                    for k in events:
+                        end = ctl.handle(k, hold_mode=held is not None) or end
                     if end is not None:
                         break
-                    act = ctl.action()
+                    act = ctl.action(held)
                     images.append(obs["image"])
                     states.append(obs["state"])
                     actions.append(act)

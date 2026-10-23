@@ -252,11 +252,14 @@ python scripts/eval_lockstep.py --model runs/stroke-nav-bc-manual/final-model.zi
   reach, and `--snap` moves such a goal onto the rod's path.
 - **Driving:** `teleop_lockstep.py` opens their two pages in Chrome, with the goal in the physics
   view, plus a "teleop" window that shows the policy's fluoro input, the distance, the insertion and
-  the roll. Keys:
-  - W / S push or pull (stays on), Space stops.
-  - A / D turn one control step (11.5° at full speed) per press.
+  the roll. Keys, with the teleop window focused:
+  - Hold W / S (or Up / Down) to push or pull.
+  - Hold A / D (or Left / Right) to turn: 11.5° per 0.2 s step at full speed.
   - 1 / 2 / 3 set the speed to 25 / 50 / 100 %.
   - Enter saves the episode, Backspace discards it, Esc quits.
+
+  The wire moves only while a key is held (Windows reads the key state directly). With `--keys`,
+  or on other systems, W / S latch until Space and each A / D press turns one step.
 
   An episode also ends, and is saved, on their success rule or at `--max-steps`. On their rod: turn
   to the listed entry roll first, then push. It runs at most at real time.

@@ -29,14 +29,26 @@ def test_push_is_latched_and_turns_are_queued():
 def test_episode_keys_and_queue_cap():
     t = teleop.Teleop()
     assert t.handle(13) == "save" and t.handle(8) == "discard" and t.handle(27) == "quit"
-    for _ in range(100):
+    for _ in range(100):  # a held, auto-repeating key queues only a few steps
         t.handle(ord("d"))
     assert t.turn == t.max_turn_queue
+    turns = [t.action()[1] for _ in range(t.max_turn_queue + 2)]
+    assert turns[-2:] == [0.0, 0.0]
+
+
+def test_hold_mode_follows_held_keys():
+    t = teleop.Teleop()
+    t.handle(ord("w"), hold_mode=True)  # motion events are ignored in hold mode
+    assert t.action(set()).tolist() == [0.0, 0.0, 0.0, 0.0]
+    assert t.action({"w", "d"}).tolist() == [1.0, 1.0, 0.0, 0.0]
+    t.handle(ord("1"), hold_mode=True)
+    assert t.action({"s", "a"}).tolist() == [-0.25, -0.25, 0.0, 0.0]
+    assert t.action(set()).tolist() == [0.0, 0.0, 0.0, 0.0]  # released: stops at once
 
 
 def test_scripted_keys():
     k = teleop.ScriptedKeys("d*2,w,_*3")
-    steps = [k.poll(0.0) for _ in range(7)]
+    steps = [k.poll(0.0)[0] for _ in range(7)]
     assert steps == [[ord("d")], [ord("d")], [ord("w")], [], [], [], [13]]
     t = teleop.Teleop()
     acts = []
