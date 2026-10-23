@@ -153,6 +153,48 @@ class Anatomy:
         centroid = self.nodes.mean(0)
         return max(ends, key=lambda e: float(np.linalg.norm(self.nodes[e] - centroid)))
 
+    def default_occlusion_target(self, min_lumen_mm: float = 1.0) -> int:
+        """Proximal entrance node (radius >= ``min_lumen_mm``) of the primary occlusion or stenosis.
+
+        Checks recorded 100 % occlusions in ``meta['occlusions']`` first, then the carotid stenosis
+        region (60-160 mm along ``left_carotid`` / ``right_carotid``), and falls back to the tightest
+        interior constriction across non-root branches.
+        """
+        occs = self.meta.get("occlusions") or []
+        if occs:
+            br = occs[0]["branch"]
+            from_mm = float(occs[0]["from_mm"])
+            nodes = self.branch_nodes(br)
+            arcs = self.arc[nodes] - self.arc[nodes].min()
+            idx = int(np.argmin(np.abs(arcs - from_mm)))
+            while idx > 0 and self.radius[nodes[idx]] < min_lumen_mm:
+                idx -= 1
+            return int(nodes[idx])
+
+        carotids = [b for b in ("left_carotid", "right_carotid") if b in self.branch_names]
+        candidates = []
+        for br in (carotids or [b for b in self.branch_names if b != self.meta.get("root")]):
+            nodes = self.branch_nodes(br)
+            if len(nodes) < 5:
+                continue
+            arcs = self.arc[nodes] - self.arc[nodes].min()
+            rads = self.radius[nodes]
+            mask = (arcs >= 60.0) & (arcs <= 160.0) if br in carotids and arcs.max() >= 120.0 else np.ones(len(nodes), dtype=bool)
+            if not mask.any():
+                mask = np.ones(len(nodes), dtype=bool)
+            sub_idx = np.where(mask)[0]
+            min_pos = int(sub_idx[int(np.argmin(rads[sub_idx]))])
+            candidates.append((float(rads[min_pos]), br, nodes, min_pos))
+
+        if candidates:
+            _, _, nodes, idx = min(candidates, key=lambda item: item[0])
+            while idx > 0 and self.radius[nodes[idx]] < min_lumen_mm:
+                idx -= 1
+            return int(nodes[idx])
+
+        nodes = self.branch_nodes(self.branch_names[-1])
+        return int(nodes[max(0, len(nodes) - 5)])
+
     def resolve(self, spec, rng: np.random.Generator | None = None) -> int:
         """Turn a node/target spec into a node id (see module docstring)."""
         if isinstance(spec, (int, np.integer)):
@@ -160,6 +202,8 @@ class Anatomy:
         if isinstance(spec, (list, tuple, np.ndarray)) and len(spec) == 3:
             return self.nearest_node(spec)
         s = str(spec).strip()
+        if s.lower() in ("occlusion", "stenosis"):
+            return self.default_occlusion_target()
         if s.lstrip("-").isdigit():
             return int(s)
         if s.startswith("xyz:"):

@@ -80,3 +80,6 @@ def test_target_specs(toy_anatomy):
     assert {a.branch_of(int(x)) for x in pool} == {"left_branch", "right_branch"}
     assert a.branch_of(a.resolve("random:right_branch@5-10", rng)) == "right_branch"
     assert a.resolve("xyz:0,0,0") == a.default_start()
+    occ = a.resolve("occlusion")
+    assert a.radius[occ] >= 1.0
+

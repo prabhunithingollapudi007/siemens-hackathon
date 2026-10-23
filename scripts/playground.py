@@ -51,7 +51,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default="0248_H_AOCERE_CAS")
     ap.add_argument("--variant", default=None)
-    ap.add_argument("--target", default="left_carotid@60", help="target spec (see stroke_nav.data.anatomy)")
+    ap.add_argument("--target", default="occlusion", help="target spec (default: occlusion/stenosis area; see stroke_nav.data.anatomy)")
     ap.add_argument("--start", default=None)
     ap.add_argument("--max-steps", type=int, default=600)
     ap.add_argument("--record", default=None, help="run the oracle off-screen and save a smooth .mp4 / .gif (or the final .png)")
@@ -194,12 +194,31 @@ def main() -> None:
             return
         node = env.anat.nearest_node(point)
         name = env.anat.branch_of(node)
+        picked_node = node
+        try:
+            if state["pick"] == "target":
+                reset({"target": node})
+            else:
+                reset({"start": node})
+        except ValueError as err:
+            # If the user clicked directly on a narrow stenosis/occlusion throat, snap proximally along the branch
+            nodes = env.anat.branch_nodes(name)
+            idx = int(np.where(nodes == node)[0][0]) if node in nodes else 0
+            while idx > 0 and env.anat.radius[nodes[idx]] < 1.0:
+                idx -= 1
+            node = int(nodes[idx])
+            try:
+                if state["pick"] == "target":
+                    reset({"target": node})
+                else:
+                    reset({"start": node})
+            except ValueError:
+                state["status"] = f"cannot set {state['pick']} to node {picked_node}: {err}"
+                scene.update(state["status"], KEYS_HELP)
+                return
         saved = save_selection(env, args.model, **({"target_node": node} if state["pick"] == "target" else {"start_node": node}))
-        if state["pick"] == "target":
-            reset({"target": node})
-        else:
-            reset({"start": node})
-        state["status"] = f"{state['pick']} set to node {node} in {name} (saved to {saved})"
+        snap_note = f" (snapped from narrow stenosis node {picked_node})" if node != picked_node else ""
+        state["status"] = f"{state['pick']} set to node {node} in {name}{snap_note} (saved to {saved})"
         scene.update(state["status"], KEYS_HELP)
 
     pl.enable_point_picking(callback=on_pick, show_message=False, show_point=False, left_clicking=False)

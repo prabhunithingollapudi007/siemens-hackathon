@@ -45,6 +45,7 @@ PyTorch 2.14.1 (the organiser uses cu130). All commands below run in the activat
 ```bash
 python scripts/fetch_data.py --list --anatomy cerebral          # models that have centerlines
 python scripts/fetch_data.py --model 0248_H_AOCERE_CAS --list-variants
+python scripts/fetch_data.py --model 0248_H_AOCERE_CAS --variant 40Right85Left
 python scripts/fetch_data.py --model 0248_H_AOCERE_CAS --variant 10Left100Right
 python scripts/plot_anatomy.py --model 0248_H_AOCERE_CAS        # results/<model>_anatomy.png
 ```
@@ -55,10 +56,34 @@ Only the centerlines, the surface model and the license are pulled, with HTTP ra
 the centerline runs off-centre. Tails outside the surface are trimmed, and gaps of 3 mm or more in a
 large vessel are marked as occlusions (the 100 % stenosis variants).
 
+### `0248_H_AOCERE_CAS` Stenosis Variants (30 Configurations)
+
+`0248_H_AOCERE_CAS` includes 30 paired bilateral carotid artery stenosis (CAS) surface meshes combining
+10%, 25%, 40%, 50%, 70%, 85%, and 100% (complete occlusion) blockages on the Left and Right internal
+carotid arteries (`left_carotid@140` and `right_carotid@118`):
+
+| Dominant Side | Blockage Severity | Variant Configurations (`--variant <NAME>`) |
+|---|---|---|
+| **Left > Right** *(Left ? 50%)* | **100% Left** (occluded) | `10Right100Left`, `25Right100Left`, `40Right100Left`, `50Right100Left`, `70Right100Left`, `85Right100Left` |
+| **Left > Right** *(Left ? 50%)* | **85% Left** | `10Right85Left`, `25Right85Left`, `40Right85Left` *(default symmetry pair to `40Left85Right`)* |
+| **Left > Right** *(Left ? 50%)* | **70% Left** | `10Right70Left`, `25Right70Left`, `40Right70Left` |
+| **Left > Right** *(Left ? 50%)* | **50% Left** | `10Right50Left`, `25Right50Left`, `40Right50Left` |
+| **Right > Left** *(Right ? 50%)* | **100% Right** (occluded) | `10Left100Right`, `25Left100Right`, `40Left100Right`, `50Left100Right`, `70Left100Right`, `85Left100Right` |
+| **Right > Left** *(Right ? 50%)* | **85% Right** | `10Left85Right`, `25Left85Right`, `40Left85Right` *(default variant)* |
+| **Right > Left** *(Right ? 50%)* | **70% Right** | `10Left70Right`, `25Left70Right`, `40Left70Right` |
+| **Right > Left** *(Right ? 50%)* | **50% Right** | `10Left50Right`, `25Left50Right`, `40Left50Right` |
+
+*(Note: `70Left100Right` and `85Left100Right` also have >50% Left blockage combined with 100% Right occlusion.)*
+
+Other cerebral/aortic VMR models tested with this pipeline include `0024_H_AO_H` (healthy aortic arch,
+5 branches) and `0050_H_CERE_H`, `0051_H_CERE_H`, `0052_H_CERE_H`, `0053_H_CERE_H` (healthy cerebral
+arteries).
+
 ## 2. Drive and pick targets
 
 ```bash
 python scripts/playground.py --model 0248_H_AOCERE_CAS
+python scripts/playground.py --model 0248_H_AOCERE_CAS --variant 40Right85Left
 python scripts/playground.py --model 0248_H_AOCERE_CAS --target right_anterior@20 --record demo.gif
 ```
 
@@ -76,6 +101,7 @@ python scripts/playground.py --model 0248_H_AOCERE_CAS --target right_anterior@2
 
 | Spec | Meaning |
 |---|---|
+| `occlusion` (or `stenosis`) | proximal entrance of the primary occlusion / stenosis (default in `playground.py`) |
 | `left_carotid@120`, `left_carotid@-5` | 120 mm along a branch; 5 mm from its distal end |
 | `random:left_carotid@-15--1\|right_carotid@-15--1` | a new random node per episode (here M1) |
 | `xyz:-120,110,-200`, `1234` | nearest node to a point (mm); a node id |

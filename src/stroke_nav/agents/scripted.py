@@ -85,9 +85,15 @@ class ScriptedOracle:
         action[0], action[1] = v_w, w_w
 
         # 3) Microcatheter: follow the wire at a fixed gap; finish at the target.
-        wire_done = sim.L[WIRE] >= wire_goal - 0.5 or sim.L[WIRE] >= sim.track_s[-1] - 0.5 and v_w <= 0
+        wire_at_limit = p.wire_travel_mm is not None and sim.L[WIRE] >= p.wire_travel_mm - 0.5
+        wire_done = (
+            wire_at_limit
+            or sim.L[WIRE] >= wire_goal - 0.5
+            or (sim.L[WIRE] >= sim.track_s[-1] - 0.5 and v_w <= 0)
+        )
         cath_goal = self.s_target if wire_done else min(self.s_target, sim.L[WIRE] - self.catheter_gap_mm)
-        cath_goal = min(cath_goal, sim.L[WIRE])
+        if not wire_at_limit:
+            cath_goal = min(cath_goal, sim.L[WIRE])
         action[2] = np.clip((cath_goal - sim.L[CATH]) / step_c, -1.0, 1.0)
         if not wire_done and sim.L[CATH] <= sim.L[WIRE]:
             action[2] = max(action[2], 0.0)  # while following, hold instead of backing up
