@@ -228,7 +228,7 @@ These come from the sub-project `ROADMAP.md` and `HANDOFF.md` files:
 
 - unit doc mismatch between `DeviceCommand` and `ROS2_INTERFACE.md`
 - only two modules supported
-- no faster-than-real-time lockstep simulation
+- no faster-than-real-time lockstep simulation (we built one on their pages: see §14)
 - a headless or CLI simulator instead of the browser
 - OpenNG3 owning the joint trajectory
 - recorder migration to structured topics
@@ -360,3 +360,16 @@ carotid targets fail on a false wrong-vessel alarm in the crowded arch). On thei
 to the right subclavian passed two of three bifurcations before the 600-step limit, slowed by the
 second browser tab taking the command channel. Open-loop replay of our planned trajectory does not
 work there: their rod picks different branches than our tip model.
+
+## 14. Lockstep physics (2026-10-23)
+
+**Lockstep env** (`stroke_nav.organiser.live.lockstep.make_env`). Their physics page and noisy viewer
+run in headless Chrome with `lockstep_page.js` injected: we run their animation frames ourselves
+(1/60 s of simulated time each) and speak their ROS-bridge WebSocket protocol in-page, so no Docker,
+ROS or wall clock is involved. Their `OpenNG3Env`, observation, reward, success rule and goal come
+from their `openng3_rl` sources. The Monadnock robot (50 ms delay, deadband, travel limits) and their
+noise node (noise, 7 % tip dropout, 50-150 ms latency) are emulated. One control step takes about
+0.25 s on this laptop (0.8x real time per worker; 4 workers in parallel). Stop their Docker stack
+first so the pages get the CPU. Each worker gets its own page and asset-server ports
+(8100 + 10·worker, 8102 + 10·worker): their asset server keeps a single authoritative page session,
+and workers sharing one got each other's mesh-to-world transform, i.e. wrong goals.
