@@ -271,9 +271,10 @@ powershell -ExecutionPolicy Bypass -File tools\organiser_stack.ps1 start
 1. It loads the Monadnock image and builds `hcmr/openng3-bridge:dev` (5.7 GB) and the two EndoNav images (1.3 GB each) when they are missing.
 2. It starts `ros2-bridge`, `noise-injection`, `openng3-sim` and `monadnock-sim`.
 3. It compiles `bridge` with colcon and launches `full_system.launch.py` headless.
-4. It re-zeroes the EndoNav follower, serves the pages on ports 8000, 8001 and 8002 (scenario files), and opens the physics page.
+4. It waits until `/ng3/joint_states` is published, then re-zeroes the EndoNav follower (a zero latched before feedback pins the page at absolute positions), serves the pages on ports 8000, 8001 and 8002 (scenario files), and opens a fresh physics page (a page left from an earlier run is closed, never reused).
+5. It checks the page end to end: all four bridge sockets (18765-18768) held by our Chrome only, a checked coordinated reset that leaves the page guidewire at 0 mm, a 6 s push at 5 mm/s that the page must follow, and a reset back home. On failure it re-zeroes the follower and reloads the page, then starts a new Chrome, and exits 1 if the page still does not follow. A page in another browser (for example an Edge tab) is reported by name and not repaired: close that tab.
 
-Other commands: `status`, `test` (5 mm/s on module 1), `rebaseline`, `stop`.
+Other commands: `status`, `test` (5 mm/s on module 1), `rebaseline`, `stop` (also closes the physics-page Chrome).
 
 `start` now also starts their reset coordinator (`/hcmr/episode/reset`, from `HCMR-EV-Integration`)
 and runs the physics page in headless Chrome with the flags of their RL renderer
