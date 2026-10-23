@@ -222,8 +222,15 @@ def entry_frame(anat, start: int | None = None, meta: dict | None = None) -> "Or
     y = np.cross(z, x)
     R = np.vstack([x, y, z])  # rows: obj axes expressed in VMR coordinates -> obj = R @ (vmr - p0)
     frame = OrganiserFrame(M=_orthonormal(R.T), t_cm=p0_cm, meta={"source": f"entry frame of {anat.name}: start node {start} at the origin, "
-                                                                  "vessel axis +Z (authored bake)", **(meta or {})})
+                                                                  "vessel axis +Z (authored bake)", "start_node": start, **(meta or {})})
     return frame
+
+
+def entry_node(anat, frame: "OrganiserFrame") -> int:
+    """The node where the robot enters: the entry frame's ``start_node`` (``make_scenario.py --start``),
+    else the model's default start. Plan routes from here, so they match their physics' entrance."""
+    node = (frame.meta or {}).get("start_node")
+    return anat.default_start() if node is None else int(node)
 
 
 def frame_path(model: str, processed_dir: str | Path = "data/processed") -> Path:

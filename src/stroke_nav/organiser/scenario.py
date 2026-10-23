@@ -72,17 +72,62 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+PAGE_BAND_FRACTION = 0.02  # their bakeMesh: authored entrance band |z| <= 2 % of the mesh height
+
+
+def page_lumen_radius_cm(verts_cm: np.ndarray) -> float:
+    """``mesh.lumenR`` as their physics page computes it for an authored mesh (``bakeMesh``): the mean
+    distance from the Z axis of the vertices within the entrance band. The page draws both devices at
+    least 10 % of it thick, and it bounds the wall grid's cell size."""
+    v = np.asarray(verts_cm, dtype=np.float64)
+    band = max(1e-9, PAGE_BAND_FRACTION * max(float(v[:, 2].max()), 0.0))
+    sel = np.abs(v[:, 2]) <= band
+    return float(np.hypot(v[sel, 0], v[sel, 1]).mean()) if sel.any() else 2.0  # page default 0.02 m
+
+
+def clear_entrance_band(verts_cm: np.ndarray, tri: np.ndarray, keep_radius_cm: float, margin_cm: float = 0.5
+                        ) -> tuple[np.ndarray, np.ndarray, int]:
+    """Remove triangles of other vessels that reach into the page's entrance band.
+
+    Their page takes every vertex with |z| <= 2 % of the mesh height as the entrance cross-section. When
+    another vessel ends near z = 0 (the other femoral artery of an aorto-femoral model), its vertices
+    inflate ``lumenR``: devices are drawn many times too thick. Triangles with a vertex below the band
+    (+ ``margin_cm``) farther than ``keep_radius_cm`` from the Z axis are dropped, leaving that vessel
+    open-ended above the band. Returns the vertices, triangles and the number of triangles removed."""
+    band = PAGE_BAND_FRACTION * max(float(verts_cm[:, 2].max()), 0.0) + margin_cm
+    near = (verts_cm[:, 2] <= band) & (np.hypot(verts_cm[:, 0], verts_cm[:, 1]) > keep_radius_cm)
+    drop = near[tri].any(axis=1)
+    if not drop.any():
+        return verts_cm, tri, 0
+    tri = tri[~drop]
+    used = np.unique(tri)
+    remap = -np.ones(len(verts_cm), dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    return verts_cm[used], remap[tri], int(drop.sum())
+
+
 def write_scenario(model: str, variant: str | None, goals_vmr_mm, root: str | Path = DEFAULT_SCENARIO_ROOT,
                    frame: OrganiserFrame | None = None, target_triangles: int = 10_000, name: str | None = None,
-                   raw_dir: str | Path = Path("data") / "raw", validate: bool = True) -> Path:
+                   raw_dir: str | Path = Path("data") / "raw", validate: bool = True,
+                   entry_radius_mm: float | None = None) -> Path:
     """Write ``<root>/<name>/{vessel.obj, goals.txt, scenario.json}`` for a VMR model variant, with the
-    goals (VMR mm) converted to their mesh frame. Returns the scenario folder."""
+    goals (VMR mm) converted to their mesh frame. Returns the scenario folder.
+
+    ``entry_radius_mm``: lumen radius of the entry vessel. Other vessels inside the page's entrance band
+    are cut away beyond twice this radius (at least 10 mm; 25 mm when not given), see
+    ``clear_entrance_band``; a scenario whose band then still does not look like the entry vessel is refused."""
     frame = frame or default_frame()
     name = name or scenario_name(model, variant)
     out = Path(root) / name
     out.mkdir(parents=True, exist_ok=True)
     verts_mm, tri = decimated_triangles(variant_surface(model, variant, raw_dir), target_triangles)
     verts_cm = frame.vmr_mm_to_obj_cm(verts_mm)
+    keep_cm = max(1.0, 0.2 * entry_radius_mm) if entry_radius_mm else 2.5
+    verts_cm, tri, clipped = clear_entrance_band(verts_cm, tri, keep_cm)
+    lumen_cm = page_lumen_radius_cm(verts_cm)
+    if lumen_cm > keep_cm:
+        raise ValueError(f"{name}: their page would take an entrance lumen of {lumen_cm * 10:.1f} mm radius "
+                         f"(entry vessel kept within {keep_cm * 10:.0f} mm); check the entry frame")
     goals_cm = np.atleast_2d(frame.vmr_mm_to_obj_cm(np.asarray(goals_vmr_mm, dtype=float)))
     lo, hi = verts_cm.min(0), verts_cm.max(0)
     for g in goals_cm:
@@ -92,6 +137,9 @@ def write_scenario(model: str, variant: str | None, goals_vmr_mm, root: str | Pa
     with open(obj, "w", encoding="utf-8", newline="\n") as f:
         f.write(f"# {model} {variant or ''}: VMR surface decimated to {len(tri)} triangles, in the organiser's mesh frame (cm).\n")
         f.write("# Converted with the fitted OrganiserFrame (stroke_nav.organiser.frame); same frame as cas-reference/vessel.obj.\n")
+        if clipped:
+            f.write(f"# {clipped} triangles of other vessels removed from the entrance band (beyond {keep_cm * 10:.0f} mm of the "
+                    f"entry axis, z <= {PAGE_BAND_FRACTION:.0%} of the height + 5 mm): their page's lumenR {lumen_cm * 10:.1f} mm.\n")
         for x, y, z in verts_cm:
             f.write(f"v {x:.6f} {y:.6f} {z:.6f}\n")
         for a, b, c in tri + 1:

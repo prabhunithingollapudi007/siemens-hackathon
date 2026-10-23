@@ -52,7 +52,7 @@ from pathlib import Path
 import numpy as np
 
 from stroke_nav.organiser.live.renderer import HCMR_EV, PHYSICS_HTML, NOISY_HTML, REPO, RENDERER_FLAGS, _chrome
-from stroke_nav.organiser.spec import DEFAULT_SPEC
+from stroke_nav.organiser.spec import DEFAULT_SPEC, device_parameters_path
 
 INIT_SCRIPT = Path(__file__).with_name("lockstep_page.js")
 FRAME_DT = 1.0 / 60.0  # the physics page's fixed step
@@ -130,8 +130,7 @@ def _ensure_servers(ports: Ports, scenario: str, device_parameters: Path | None,
     if not _serving(ports.asset, "/health"):
         asset = organiser_rl("asset_server")
         dp = organiser_rl("device_parameters")
-        params = dp.load_device_parameters(Path(device_parameters or os.environ.get("STROKE_NAV_DEVICE_PARAMS")
-                                                or REPO / "device-parameters.json"))
+        params = dp.load_device_parameters(Path(device_parameters or device_parameters_path()))  # follows STROKE_NAV_ROBOT
         status.parent.mkdir(parents=True, exist_ok=True)
 
         class Runtime(asset.ScenarioRuntime):

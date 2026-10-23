@@ -43,7 +43,9 @@ def build(anat: Anatomy, frame, target: str):
     else:
         node = anat.resolve(target)
         goal = anat.nodes[node].copy()
-    plan = PathPlanner(anat, GUIDEWIRE).plan(anat.default_start(), node)
+    from stroke_nav.organiser.frame import entry_node
+
+    plan = PathPlanner(anat, GUIDEWIRE).plan(entry_node(anat, frame), node)
     if not plan.feasible:
         raise SystemExit(f"no feasible route: {plan.message}")
     cath_r = get_device(CATHETER).min_lumen_radius_mm

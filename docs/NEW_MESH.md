@@ -80,6 +80,31 @@ Two things went wrong first and are fixed in the code:
 Total: about 20 minutes from a fresh VMR model to a cloned policy with videos, excluding the two
 detours.
 
+## Femoral entry and a longer robot (`0028_H_ABAO_H`, 2026-10-23)
+
+`0028_H_ABAO_H` runs from the aortic root to both femoral arteries. From the right femoral end the carotids are
+604-665 mm along the route, beyond the Monadnock's 264.5 mm, so a second robot profile `robots/long-reach`
+(`STROKE_NAV_ROBOT=long-reach`: 750 mm guidewire travel, 1.2 m catheter) was used:
+
+```bash
+set STROKE_NAV_ROBOT=long-reach
+python scripts/make_scenario.py --model 0028_H_ABAO_H --start 1054 --target Left_Common_Carotid@30 --target Right_Common_Carotid@-5
+python scripts/calibrate_rolls.py --model 0028_H_ABAO_H --rolls 0:360:30 --seeds 1 --workers 4 --out results/lockstep/roll_sweep_0028_H_ABAO_H-long-reach.json
+python scripts/plan_case.py --model 0028_H_ABAO_H --target Left_Common_Carotid@30 --case-id 0028-lcca30 --methods roll,bc \n    --table results/lockstep/roll_sweep_0028_H_ABAO_H-long-reach.json --bc-demos 12 --bc-minutes 20 --sigmas 0,0.2 --eval-episodes 1 --max-steps 600
+```
+
+| Step | Wall time | Result |
+|---|---|---|
+| roll sweep, 12 rolls x 1 seed, pushes to 750 mm | 14.4 min | only 120° ends in the left CCA; 0-60° and 180-330° left subclavian, 150° splenic, 90° aorta |
+| A* + entry roll 120° | 2.2 min | **reached in 62.4 s**, 2.1 mm |
+| 12 demonstrations + behaviour cloning | 13.8 min | 11/12 demos; clone **reached in 64.0 s**, 2.3 mm |
+
+- `--start` puts the entry at the right femoral end; the frame saves it (`start_node`) and routes are planned from it
+  (`frame.entry_node`). `calibrate_rolls.py` sizes its step cap from the robot's travel; episodes need `--max-steps 600`.
+- The first scenario drew both devices 18.8 mm thick: the left femoral end lay in their page's entrance band (AGENTS.md,
+  known issues). `write_scenario` now cuts it; the route result was unchanged.
+- Run folders made with a robot profile carry its device parameters, so they do not match the organiser's hash.
+
 ## 4. If the mesh comes without centerlines
 
 Their page's skeleton is the fastest source: after the scenario loads, `mesh.centerlineCanon` holds

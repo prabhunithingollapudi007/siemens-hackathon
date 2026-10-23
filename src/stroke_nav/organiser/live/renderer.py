@@ -166,8 +166,9 @@ class RLRenderer:
     def __init__(self, scenario: str = "cas-reference", device_parameters: str | Path | None = None,
                  status_file: str | Path | None = None):
         self.scenario = scenario
-        self.device_parameters = Path(device_parameters or os.environ.get("STROKE_NAV_DEVICE_PARAMS")
-                                      or REPO / "device-parameters.json")
+        from stroke_nav.organiser.spec import device_parameters_path
+
+        self.device_parameters = Path(device_parameters or device_parameters_path())  # follows STROKE_NAV_ROBOT
         self.status_file = Path(status_file or REPO / "runs" / "live" / "scenario-runtime.json")
         self.physics = PhysicsPage(9222, 8000, PHYSICS_HTML)
         self.viewer = PhysicsPage(9223, 8001, NOISY_HTML)

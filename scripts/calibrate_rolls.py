@@ -30,7 +30,7 @@ from stroke_nav.organiser.live.lockstep import make_env  # noqa: E402
 from stroke_nav.organiser.spec import DEFAULT_SPEC  # noqa: E402
 
 FAR_GOAL_M = (1.0, 1.0, 1.0)  # never reached, so their success rule does not end the push early
-MAX_STEPS = 240
+MAX_STEPS = max(240, int(DEFAULT_SPEC.robot.guidewire_travel_mm / 2.0) + 60)  # full push at 2 mm/step + the roll (robot profiles)
 
 
 ENV_KWARGS: dict = {}

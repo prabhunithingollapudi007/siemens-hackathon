@@ -31,7 +31,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from stroke_nav.data.anatomy import Anatomy  # noqa: E402
 from stroke_nav.organiser.frame import default_frame, entry_frame, frame_path, read_obj_vertices  # noqa: E402
-from stroke_nav.organiser.scenario import DEFAULT_SCENARIO_ROOT, scenario_name, validate_scenario, write_scenario  # noqa: E402
+from stroke_nav.organiser.scenario import (DEFAULT_SCENARIO_ROOT, page_lumen_radius_cm, scenario_name,  # noqa: E402
+                                           validate_scenario, write_scenario)
 from stroke_nav.organiser.spec import DEFAULT_SPEC  # noqa: E402
 from stroke_nav.planning.constraints import GUIDEWIRE  # noqa: E402
 from stroke_nav.planning.planner import PathPlanner, PlannerWeights, nearest_feasible_target  # noqa: E402
@@ -74,13 +75,15 @@ def main() -> None:
         else:
             print(f"[scenario] {spec:20s} -> node {node}: no feasible route ({plan.message})")
 
-    out = write_scenario(args.model, args.variant, goals, args.root, frame, target_triangles=args.triangles)
+    out = write_scenario(args.model, args.variant, goals, args.root, frame, target_triangles=args.triangles,
+                         entry_radius_mm=None if args.model == "0248_H_AOCERE_CAS" else float(anat.radius[start]))
     summary = validate_scenario(scenario_name(args.model, args.variant), args.root)
     verts = read_obj_vertices(out / "vessel.obj")
     band = verts[np.abs(verts[:, 2]) <= 0.02 * verts[:, 2].max()]
     print(f"[scenario] wrote {out}: {len(verts)} vertices, bounds {np.round(verts.min(0), 1).tolist()}..{np.round(verts.max(0), 1).tolist()} cm; "
           f"entrance band: {len(band)} vertices, centroid {np.round(band.mean(0), 2).tolist() if len(band) else None} cm "
-          f"(their page re-centres x, y); mesh_to_world diag {np.round(np.asarray(summary['mesh_to_world']).reshape(4, 4).diagonal(), 3).tolist()}; "
+          f"(their page re-centres x, y); page lumenR {page_lumen_radius_cm(verts) * 10:.1f} mm (devices drawn >= "
+          f"{0.2 * page_lumen_radius_cm(verts) * 10:.1f} mm thick); mesh_to_world diag {np.round(np.asarray(summary['mesh_to_world']).reshape(4, 4).diagonal(), 3).tolist()}; "
           f"{summary.get('goal_count')} goals")
 
 

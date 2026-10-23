@@ -1,0 +1,9 @@
+{
+  "schema": "stroke-nav/robot/1",
+  "name": "long-reach",
+  "description": "Hypothetical robot for femoral access to the carotids: guidewire travel 750 mm instead of the Monadnock's 264.5 mm (their physics page accepts insertion up to 800 mm), catheter 1.2 m (page maximum). Wire 1.2 m is already the page maximum. Not the organiser's robot: run folders made with it do not match their device-parameter hash.",
+  "guidewire_travel_mm": 750.0,
+  "catheter_lead_max_mm": 229.2,
+  "guidewire_lag_mm": 5.0,
+  "catheter_lag_mm": 1.5
+}

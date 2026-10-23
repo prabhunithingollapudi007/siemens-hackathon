@@ -172,6 +172,22 @@ class RobotSpec:
     catheter_lead_max_mm: float = 229.2  # catheter insertion <= guidewire insertion + this
     guidewire_lag_mm: float = 5.0  # measured mean lag of their rod behind the commanded insertion
     catheter_lag_mm: float = 1.5
+    name: str = "organiser"  # robot profile (robots/<name>/robot.json); "organiser" = their Monadnock
+
+
+ROBOT_SCHEMA = "stroke-nav/robot/1"
+PAGE_INSERTION_MAX_MM = 800.0  # their physics page's insertion slider (depth, -50..800 mm)
+
+
+def load_robot(path: str | Path) -> RobotSpec:
+    """A robot profile's limits (``robot.json``, schema ``stroke-nav/robot/1``; travel in mm)."""
+    doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    if doc.get("schema") != ROBOT_SCHEMA:
+        raise ValueError(f"{path}: expected schema {ROBOT_SCHEMA!r}")
+    robot = RobotSpec(**{k: doc[k] for k in RobotSpec.__dataclass_fields__ if k in doc})
+    if not 0.0 < robot.guidewire_travel_mm <= PAGE_INSERTION_MAX_MM:
+        raise ValueError(f"{path}: guidewire travel must be in (0, {PAGE_INSERTION_MAX_MM:g}] mm, their page's insertion range")
+    return robot
 
 
 IMAGE_SHAPE = (1, 128, 128)
@@ -292,17 +308,35 @@ DEVICE_PARAMETERS_ENV = "STROKE_NAV_DEVICE_PARAMS"
 BUILTIN_SPEC = OrganiserSpec()  # organiser snapshot, used only when no device-parameters.json is found
 
 
+ROBOT_ENV = "STROKE_NAV_ROBOT"
+ROBOTS_DIR = REPO_ROOT / "robots"
+
+
 def device_parameters_path() -> Path:
-    """The device-parameters file in use: ``$STROKE_NAV_DEVICE_PARAMS`` or ``<repo>/device-parameters.json``."""
+    """The device-parameters file in use: ``$STROKE_NAV_DEVICE_PARAMS``, else the robot profile's
+    ``robots/$STROKE_NAV_ROBOT/device-parameters.json``, else ``<repo>/device-parameters.json``."""
     env = os.environ.get(DEVICE_PARAMETERS_ENV)
-    return Path(env) if env else REPO_ROOT / "device-parameters.json"
+    if env:
+        return Path(env)
+    robot = os.environ.get(ROBOT_ENV)
+    if robot and robot != "organiser":
+        path = ROBOTS_DIR / robot / "device-parameters.json"
+        if not path.is_file():
+            known = sorted(p.name for p in ROBOTS_DIR.iterdir() if p.is_dir()) if ROBOTS_DIR.is_dir() else []
+            raise FileNotFoundError(f"{ROBOT_ENV}={robot}: no {path} (profiles: {known})")
+        return path
+    return REPO_ROOT / "device-parameters.json"
 
 
 def load_active_spec() -> OrganiserSpec:
-    """Spec whose device controls come from ``device_parameters_path()`` (fallback: the built-in copy)."""
+    """Spec whose device controls come from ``device_parameters_path()`` (fallback: the built-in copy).
+    A ``robot.json`` next to that file replaces the robot limits (a robot profile under ``robots/``)."""
     path = device_parameters_path()
     if path.is_file():
-        return load_device_parameters(path)
+        spec = load_device_parameters(path)
+        if (path.parent / "robot.json").is_file():
+            spec = replace(spec, robot=load_robot(path.parent / "robot.json"))
+        return spec
     if os.environ.get(DEVICE_PARAMETERS_ENV):
         raise FileNotFoundError(f"{DEVICE_PARAMETERS_ENV} points to a missing file: {path}")
     warnings.warn(f"{path} not found; using the built-in organiser device parameters", stacklevel=2)
@@ -319,7 +353,8 @@ def describe_devices(spec: OrganiserSpec | None = None) -> str:
     status = "matches the organiser's run" if h == ORGANISER_DEVICE_PARAMETERS_HASH else "DIFFERS from the organiser's run"
     return (f"devices from {src} (sha256 {h[:12]}, {status}): {gw['preset']} wire {gw['outer_diameter_mm']} mm, "
             f"tip {gw['tip_length_mm']:.0f} mm @ {gw['tip_angle_deg']:.0f} deg; {ca['preset']} catheter "
-            f"{ca['outer_diameter_mm']} mm, tip {ca['tip_length_mm']:.0f} mm @ {ca['tip_angle_deg']:.0f} deg")
+            f"{ca['outer_diameter_mm']} mm, tip {ca['tip_length_mm']:.0f} mm @ {ca['tip_angle_deg']:.0f} deg; "
+            f"robot {spec.robot.name}, guidewire travel {spec.robot.guidewire_travel_mm:g} mm")
 
 
 DEFAULT_SPEC = load_active_spec()

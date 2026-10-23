@@ -400,6 +400,18 @@ python scripts/plan_case.py --target xyz:-78.0,118.5,-274.0 --methods astar,roll
   diameters) and the organiser's robot (5 Hz, 10 mm/s, 1 rad/s, guidewire travel 264.5 mm, catheter at
   most 229.2 mm ahead of the wire). `STROKE_NAV_DEVICE_PARAMS=<file>` selects another file. Targets past
   the travel cannot be reached (for 0248 the distal ICA and M1 lie 450-530 mm along the vessels).
+- **Robot profiles** (`robots/<name>/`: an organiser-format `device-parameters.json` and a `robot.json`
+  with the travel limits), selected with `STROKE_NAV_ROBOT=<name>` for every simulator, planner, lockstep
+  page and run folder. `long-reach` is a hypothetical robot for femoral access: guidewire travel 750 mm
+  (their page accepts insertion up to 800 mm) and a 1.2 m catheter (their page's maximum; the wire is
+  already 1.2 m). On `0028_H_ABAO_H` (aortic root to both femorals), from the right femoral end the left
+  CCA@30 is 604 mm and the right CCA@-5 665 mm along the route. Its device hash differs from theirs, so
+  it is for planning ahead of a robot change, not for a hand-over:
+
+  ```bash
+  set STROKE_NAV_ROBOT=long-reach
+  python scripts/make_scenario.py --model 0028_H_ABAO_H --start 1054 --target Left_Common_Carotid@30 --target Right_Common_Carotid@-5
+  ```
 - **Action:** `Box(-1, 1, (4,))`, scaled by the speed limits above.
 - **Observation** (46 floats): 3 tracking points per device tip, now and at the previous step, the
   target, target minus tip, and the previous action (as in Robertshaw et al. 2024, 2025).

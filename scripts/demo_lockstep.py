@@ -97,7 +97,7 @@ def main() -> None:
     if args.variant or args.target:
         from stroke_nav.agents.roll_table import RollTable
         from stroke_nav.data.anatomy import Anatomy
-        from stroke_nav.organiser.frame import frame_for
+        from stroke_nav.organiser.frame import entry_node, frame_for
         from stroke_nav.organiser.scenario import DEFAULT_SCENARIO_ROOT, scenario_name, write_scenario
         from stroke_nav.planning.constraints import GUIDEWIRE
         from stroke_nav.planning.planner import PathPlanner, PlannerWeights
@@ -113,7 +113,7 @@ def main() -> None:
         else:
             node = anat.resolve(args.target)
             goal_vmr = anat.nodes[node]
-        plan = PathPlanner(anat, GUIDEWIRE, PlannerWeights.profile("balanced")).plan(anat.default_start(), node)
+        plan = PathPlanner(anat, GUIDEWIRE, PlannerWeights.profile("balanced")).plan(entry_node(anat, frame), node)
         route_line = f"A* route: {' > '.join(plan.branches())} ({plan.length_mm:.0f} mm, ~{plan.costs['est_time_s']:.0f} s)" if plan.feasible else "A*: no route"
         roll = args.roll
         if roll is None:
@@ -173,7 +173,7 @@ def main() -> None:
             if done:
                 banner = (f"GOAL REACHED in {step / 5:.1f} s  ({dist:.1f} mm, within 5 mm for 3 steps)" if info["success"]
                           else f"episode ended: {info.get('reset_reason')}  ({dist:.1f} mm)")
-            target = (f"{args.variant or '0248'}: {'organiser cas-reference goal' if their_goal else args.target} ({goal['branch']}), entry roll {goal['roll_deg']:g} deg" if args.target or args.variant
+            target = (f"{args.variant or args.vmr_model.split('_')[0]}: {'organiser cas-reference goal' if their_goal else args.target} ({goal['branch']}), entry roll {goal['roll_deg']:g} deg" if args.target or args.variant
                       else f"goal {goal['id']} ({goal['split']}): {goal['branch']}" if goal else "goal: cas-reference")
             lines = [name, target, *([route_line] if route_line else []), f"step {step:3d}   simulated {step / 5:5.1f} s", f"distance to goal {dist:6.1f} mm",
                      f"guidewire  in {ins:6.1f} mm  roll {rot:6.1f} deg",

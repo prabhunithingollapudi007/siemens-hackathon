@@ -11,7 +11,7 @@ import pytest
 
 from stroke_nav.env.devices import CATH, WIRE, TrackSim, device_sim_params
 from stroke_nav.env.vessel_env import EnvConfig
-from stroke_nav.organiser.spec import (BUILTIN_SPEC, DEFAULT_SPEC, DEVICE_PARAMETERS_ENV, ORGANISER_DEVICE_PARAMETERS_HASH,
+from stroke_nav.organiser.spec import (BUILTIN_SPEC, DEFAULT_SPEC, DEVICE_PARAMETERS_ENV, ORGANISER_DEVICE_PARAMETERS_HASH, ROBOT_ENV,
                                        device_parameters_hash, device_parameters_path, validate_device_parameters)
 from stroke_nav.planning.constraints import CATHETER, GUIDEWIRE, get_device
 
@@ -21,8 +21,8 @@ REPO_FILE = ROOT / "device-parameters.json"
 
 @pytest.mark.skipif(not REPO_FILE.is_file(), reason="no device-parameters.json in the repo")
 def test_repo_file_is_the_active_source_and_matches_the_organiser():
-    if os.environ.get(DEVICE_PARAMETERS_ENV):
-        pytest.skip("another device file is selected")
+    if os.environ.get(DEVICE_PARAMETERS_ENV) or os.environ.get(ROBOT_ENV, "organiser") != "organiser":
+        pytest.skip("another device file or robot profile is selected")
     assert device_parameters_path() == REPO_FILE
     doc = json.loads(REPO_FILE.read_text(encoding="utf-8"))
     assert device_parameters_hash(doc) == ORGANISER_DEVICE_PARAMETERS_HASH  # hand-over invariant
