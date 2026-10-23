@@ -25,6 +25,10 @@ in 30 carotid-stenosis variants.
 > their physics crossed a wall on the way (cas-reference 3.6 mm, right ICA occlusion 3.1 mm, 70 % left lesion
 > 1.2 mm, femoral to left CCA 2.2 mm). With the wall safety layer these runs back off and stop instead; none
 > reaches its target without a crossing yet. See [docs/SAFETY.md](docs/SAFETY.md) §7.
+>
+> **Removal.** Pulling the wire out with the entry roll still applied drags the bent tip through the wall
+> beside the profunda (5 mm deep); turning the shaft back to its starting roll first removes 500 mm in 53 s
+> with no crossing (`scripts/removal_trials.py`, docs/SAFETY.md §8).
 
 One episode per row on the organiser's physics unless a count is given; videos are 2× real time with
 their physics view on the left and the policy's fluoro input on the right (`results/` is not in git).

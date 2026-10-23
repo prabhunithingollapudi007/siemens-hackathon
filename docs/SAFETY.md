@@ -166,7 +166,48 @@ target instead of reaching it through the wall:
 the catheter behind the wire through the arch for support, or selective cannulation with the shaped
 catheter tip, not only the entry roll.
 
-## 8. Limitations and next steps
+## 8. Device removal (2026-10-23)
+
+A procedure ends with the devices coming out. `stroke_nav.agents.removal.WithdrawalController` withdraws
+the guidewire from their observation alone; `scripts/removal_trials.py` inserts with the A* + roll
+controller to a depth before its first wall crossing, holds 1 s and compares strategies from that state,
+with the wall guard on the true wire every step (one episode each).
+
+| Hazard on the way out | Strategy tried |
+|---|---|
+| tensioned wire cuts the inner curve of a bend | slow pull; wall-guarded pull (stop, re-advance 3 mm, re-roll, half speed) |
+| stored twist from the entry roll whips the tip | turn the shaft back to its starting roll first (`unwind`) |
+| bent tip snags in a branch opening | speed by lumen radius (the monitor's R1 envelope along the A* route) |
+| catheter and wire dragging each other | catheter out first over the wire (not exercised: the controllers keep the catheter at home) |
+
+`0028_H_ABAO_H` from the right femoral end, long-reach robot, withdrawing 500 mm:
+
+| Strategy | Time | Wall crossed while withdrawing | Deepest | Peak force | Fastest tip |
+|---|---|---|---|---|---|
+| naive (10 mm/s, roll kept at 120 deg) | 50.6 s | 33 steps | 5.1 mm | 6.0 mN | 40 mm/s |
+| slow (3 mm/s) | 167.4 s | 109 steps | 5.1 mm | 6.2 mN | 42 mm/s |
+| profiled (lumen-radius envelope) | 75.0 s | 64 steps | 5.0 mm | 6.1 mN | 41 mm/s |
+| guarded | 65.0 s | 5 steps, handled | 1.6 mm | 2.2 mN | 22 mm/s |
+| **unwind** (shaft back to 0 deg, then 10 mm/s) | **53.4 s** | **0** | 0.2 mm | 2.2 mN | 17 mm/s |
+| unwind + profiled + guarded | 78.0 s | 0 | 0.2 mm | 2.4 mN | 16 mm/s |
+
+Every crossing happened in the last 80 mm (femoral, beside the profunda): with the shaft still turned
+120 deg the pre-bent tip points sideways, hooks into the profunda opening and is dragged through the wall,
+snapping free at 40 mm/s. Turned back to its starting roll, the tip lines up with its way in and slides out.
+Slowing down only keeps it hooked longer, as when pushing. On cas-reference (0248, organiser robot, 120 mm
+of straight descending aorta) no strategy crossed; unwinding still lowered the fastest tip motion from 35 to
+22 mm/s for 3.6 s more.
+
+**Recommended removal:** `unwind_guarded`: turn the shaft back to its starting roll, pull at full speed,
+with the wall guard as the backstop.
+
+```bash
+set STROKE_NAV_ROBOT=long-reach
+python scripts/removal_trials.py --model 0028_H_ABAO_H --target Left_Common_Carotid@30 --roll 120 --insert-to 500
+python scripts/removal_trials.py --target scenario --roll 120 --insert-to 120 --strategies naive,unwind,unwind_guarded
+```
+
+## 9. Limitations and next steps
 
 - The simulator is kinematic: R2 reacts to blocked pushes only. With the organiser's XPBD forces, R2 can
   use real tip force; thresholds then need calibration (and units checked, see above).
