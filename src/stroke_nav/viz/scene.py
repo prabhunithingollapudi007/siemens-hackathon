@@ -95,21 +95,56 @@ class Scene:
             self.pl.remove_actor(n, reset_camera=False)
 
     # ------------------------------------------------------------------ updates
-    def update(self, status: str = "", keys_help: str | None = None, show_hud: bool = True) -> None:
+    # ------------------------------------------------------------------ smooth motion
+    def begin_step(self) -> None:
+        """Call right before ``env.step``: remembers where the devices were, so ``update(alpha=...)``
+        can draw frames in between the simulator's control steps."""
+        sim = self.env.sim
+        self._prev_state = (sim.L.copy(), sim.phi.copy())
+
+    def write_step_frames(self, n: int, status: str = "", keys_help: str | None = None) -> None:
+        """Write ``n`` movie frames moving from the state before the last step to the current one
+        (call ``begin_step`` before ``env.step``). The plotter must have a GIF or movie open."""
+        for k in range(1, max(int(n), 1) + 1):
+            self.update(status, keys_help, alpha=k / max(int(n), 1))
+            self.pl.write_frame()
+
+    def _draw_state(self, alpha: float) -> tuple[np.ndarray, np.ndarray]:
+        sim = self.env.sim
+        prev = getattr(self, "_prev_state", None)
+        if prev is None or alpha >= 1.0:
+            return sim.L, sim.phi
+        a = max(float(alpha), 0.0)
+        L0, p0 = prev
+        dphi = (sim.phi - p0 + np.pi) % (2 * np.pi) - np.pi
+        # a retraction pops track nodes: never draw beyond the current track
+        L = np.minimum(L0 + a * (sim.L - L0), sim.track_s[-1])
+        return L, p0 + a * dphi
+
+    def update(self, status: str = "", keys_help: str | None = None, show_hud: bool = True,
+               alpha: float = 1.0) -> None:
         """Redraw devices, markers and text. Actors are created once and then updated in place,
-        so this stays cheap enough to call every frame of an interactive session."""
+        so this stays cheap enough to call every frame of an interactive session.
+
+        ``alpha`` in [0, 1] draws the devices that far between the state before the last step
+        (see ``begin_step``) and the current one; 1 draws the current state."""
         env, sim, pv = self.env, self.env.sim, self.pv
         cache = self.__dict__.setdefault("_cache", {})
+        Ls, phis = self._draw_state(alpha)
         for dev, color, radius, name in ((WIRE, WIRE_COLOR, 0.35, "wire"), (CATH, CATH_COLOR, 0.8, "cath")):
-            pts = sim.device_polyline(dev)
+            pts = sim.device_polyline(dev, Ls=Ls, phis=phis)
+            actor = cache.get(name + "_actor")
             if len(pts) >= 2:
                 tube = pv.lines_from_points(pts).tube(radius=radius, n_sides=8)
                 if name in cache:
                     cache[name].copy_from(tube)
                 else:
                     cache[name] = tube
-                    self.pl.add_mesh(tube, color=color, name=name, pickable=False, reset_camera=False)
-            self._marker(cache, name + "_tip", sim.tracking_points(dev)[0], radius * 1.6, color, 1.0)
+                    cache[name + "_actor"] = actor = self.pl.add_mesh(tube, color=color, name=name, pickable=False,
+                                                                      reset_camera=False)
+            if actor is not None:
+                actor.SetVisibility(len(pts) >= 2)  # a device that is not inserted is not drawn
+            self._marker(cache, name + "_tip", sim.tracking_points(dev, Ls=Ls, phis=phis)[0], radius * 1.6, color, 1.0)
         self._marker(cache, "target", env.target_pos, env.cfg.success_threshold_mm / 2, TARGET_COLOR, 0.8)
         self._marker(cache, "start", env.anat.nodes[env.start_node], 3.0, START_COLOR, 1.0)
         if show_hud:
@@ -176,6 +211,19 @@ class Scene:
         self.pl.camera_position = [pos, tuple(c), (0, 0, 1)]
         self.pl.reset_camera(bounds=(*_interleave(a.bbox_min, a.bbox_max),))
         self.pl.camera.zoom(zoom if zoom is not None else default_zoom)
+
+
+def open_recording(plotter, path: str, fps: int) -> None:
+    """Open a GIF (``.gif``) or an MP4 movie (anything else, needs imageio-ffmpeg) for writing frames."""
+    if str(path).lower().endswith(".gif"):
+        plotter.open_gif(str(path), fps=fps)
+    else:
+        plotter.open_movie(str(path), framerate=fps, quality=7)
+
+
+def frames_per_step(fps: int, dt: float, speed: float) -> int:
+    """Frames to write per control step so the recording plays at ``speed`` x real time."""
+    return max(int(round(fps * dt / max(speed, 1e-6))), 1)
 
 
 def _interleave(lo: np.ndarray, hi: np.ndarray) -> list[float]:

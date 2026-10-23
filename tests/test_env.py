@@ -105,3 +105,23 @@ def test_wilson_ci():
     assert hi == 1.0 and 0.65 < lo < 0.75
     lo, hi = wilson_ci(0, 10)
     assert lo == 0.0 and 0.25 < hi < 0.35
+
+
+def test_drawn_device_ends_at_its_tip_and_only_shows_the_inserted_part(toy_anatomy):
+    from stroke_nav.env.devices import CATH, WIRE, TrackSim, device_sim_params
+
+    sim = TrackSim(toy_anatomy, device_sim_params())
+    sim.reset(toy_anatomy.default_start(), np.random.default_rng(0))
+    sim.L[:] = (3.0, 0.0)
+    assert len(sim.device_polyline(CATH)) == 1  # not inserted: nothing to draw
+    wire = sim.device_polyline(WIRE)
+    assert np.linalg.norm(np.diff(wire, axis=0), axis=1).sum() < 6.0  # 3 mm in, not a 30 mm stick
+    for _ in range(30):
+        sim.step(np.array([1.0, 0.4, 1.0, 0.0]))
+    for dev in (WIRE, CATH):
+        pts = sim.device_polyline(dev)
+        assert np.allclose(pts[-1], sim.tracking_points(dev)[0])
+        r = toy_anatomy.radius[sim.node_at(sim.L[dev])]
+        assert np.linalg.norm(pts[-1] - sim.position_at(sim.L[dev])) <= 0.7 * r + 1e-9  # inside the lumen
+    # in-between frames: explicit insertions/rolls equal to the state reproduce it
+    assert np.allclose(sim.device_polyline(WIRE, Ls=sim.L.copy(), phis=sim.phi.copy()), sim.device_polyline(WIRE))

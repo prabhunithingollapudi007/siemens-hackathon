@@ -8,7 +8,7 @@ exactly as in scripts/run_astar.py --sim ours.
 
     python scripts/demo_astar.py                                   # live window, several targets in a row
     python scripts/demo_astar.py --targets right_carotid@40 --speed 3
-    python scripts/demo_astar.py --record results/demo_astar.gif   # off-screen GIF for sharing
+    python scripts/demo_astar.py --record results/demo_astar.mp4   # smooth off-screen video (or .gif) for sharing
 
 Keys in the window: space pause / resume, n skip to the next target, q quit.
 """
@@ -103,6 +103,7 @@ def draw_route(scene, ep: Episode) -> None:
 
 def switch(scene, ep: Episode) -> None:
     scene.env = ep.env
+    scene._prev_state = None
     scene.clear("route")
     draw_route(scene, ep)
 
@@ -112,12 +113,14 @@ def run_window(anat, frame, spec, targets: list[str], speed: float) -> None:
 
     pl = pv.Plotter(title="stroke-nav: closed-loop A* with the organiser's devices", window_size=(1400, 950))
     pl.set_background("white")
-    st = {"i": 0, "ep": Episode(anat, frame, spec, targets[0]), "paused": False, "clock": None, "done_at": None}
+    st = {"i": 0, "ep": Episode(anat, frame, spec, targets[0]), "paused": False, "clock": None, "done_at": None,
+          "step_t": time.monotonic()}
     scene = make_scene(st["ep"], pl, spec)
     results = []
+    period = spec.dt / speed  # wall-clock time per control step
 
-    def draw():
-        scene.update(st["ep"].status(), device_line(spec) + "\nspace pause   n next target   q quit")
+    def draw(alpha: float = 1.0):
+        scene.update(st["ep"].status(), device_line(spec) + "\nspace pause   n next target   q quit", alpha=alpha)
 
     def next_target():
         ep = st["ep"]
@@ -133,27 +136,34 @@ def run_window(anat, frame, spec, targets: list[str], speed: float) -> None:
         st["clock"] = None
 
     def tick(*_):
+        """~60 frames per second: simulate the control steps that are due, and draw the devices
+        part-way between the last two simulated states so the motion is smooth."""
         ep = st["ep"]
         now = time.monotonic()
+        alpha = min((now - st["step_t"]) / period, 1.0)
         if ep.result:
             if st["done_at"] is None:
                 st["done_at"] = now
                 print(f"[demo] {ep.target}: {ep.result} in {ep.steps * spec.dt:.1f} s", flush=True)
-                draw()
+            if now - st["done_at"] <= period:
+                draw(alpha)  # finish the last move
             elif now - st["done_at"] > 3.0:
                 next_target()
             return
         if st["paused"]:
+            st["clock"] = None
             return
         if st["clock"] is None:
             st["clock"] = (now, ep.steps)
         t0, s0 = st["clock"]
-        due = s0 + int((now - t0) * speed / spec.dt) + 1
+        due = s0 + int((now - t0) / period) + 1
         for _ in range(max(0, min(due - ep.steps, 10))):
+            scene.begin_step()
             ep.step()
+            st["step_t"], alpha = now, 0.0
             if ep.result:
                 break
-        draw()
+        draw(alpha)
 
     pl.add_key_event("space", toggle_pause)
     pl.add_key_event("n", next_target)
@@ -162,20 +172,26 @@ def run_window(anat, frame, spec, targets: list[str], speed: float) -> None:
     print(device_line(spec), flush=True)
     # window first, then the timer (a VTK timer created before the window never fires on Windows)
     pl.show(interactive_update=True, auto_close=False)
-    pl.add_timer_event(max_steps=10_000_000, duration=50, callback=tick)
+    pl.add_timer_event(max_steps=10_000_000, duration=15, callback=tick)
     pl.iren.start()
     pl.close()
 
 
-def record(anat, frame, spec, targets: list[str], out: Path, every: int = 3) -> None:
+def record(anat, frame, spec, targets: list[str], out: Path, speed: float = 3.0, fps: int = 30) -> None:
+    """Off-screen recording with interpolated in-between frames (.mp4, or .gif at <= 15 fps)."""
     import pyvista as pv
 
+    from stroke_nav.viz.scene import frames_per_step, open_recording
+
     out.parent.mkdir(parents=True, exist_ok=True)
-    pl = pv.Plotter(off_screen=True, window_size=(900, 1000))
+    gif = out.suffix.lower() == ".gif"
+    fps = min(fps, 15) if gif else fps
+    n = frames_per_step(fps, spec.dt, speed)
+    pl = pv.Plotter(off_screen=True, window_size=(720, 800) if gif else (900, 1000))
     pl.set_background("white")
     ep = Episode(anat, frame, spec, targets[0])
     scene = make_scene(ep, pl, spec)
-    pl.open_gif(str(out), fps=15)
+    open_recording(pl, str(out), fps)
     for i, target in enumerate(targets):
         if i:
             ep = Episode(anat, frame, spec, target)
@@ -183,11 +199,10 @@ def record(anat, frame, spec, targets: list[str], out: Path, every: int = 3) -> 
         scene.update(ep.status(), device_line(spec))
         pl.write_frame()
         while not ep.result:
+            scene.begin_step()
             ep.step()
-            if ep.steps % every == 0 or ep.result:
-                scene.update(ep.status(), device_line(spec))
-                pl.write_frame()
-        for _ in range(20):  # hold the final frame
+            scene.write_step_frames(n, ep.status(), device_line(spec))
+        for _ in range(2 * fps):  # hold the final frame for two seconds
             pl.write_frame()
         print(f"[demo] {target}: {ep.result} in {ep.steps * spec.dt:.1f} s", flush=True)
     pl.close()
@@ -205,7 +220,7 @@ def main() -> None:
     print(describe_devices(spec), flush=True)
     anat, frame = Anatomy.load("0248_H_AOCERE_CAS"), default_frame()
     if args.record:
-        record(anat, frame, spec, args.targets, args.record)
+        record(anat, frame, spec, args.targets, args.record, args.speed)
     else:
         run_window(anat, frame, spec, args.targets, args.speed)
 

@@ -5,7 +5,7 @@ when an episode ends.
     python scripts/playground.py --model 0248_H_AOCERE_CAS
     python scripts/playground.py --model 0248_H_AOCERE_CAS --target left_carotid@-5
     python scripts/playground.py --variant 10Left100Right --target right_carotid@-5 --autoplay plan
-    python scripts/playground.py --model 0248_H_AOCERE_CAS --target left_carotid@-5 --record demo.gif
+    python scripts/playground.py --model 0248_H_AOCERE_CAS --target left_carotid@60 --record demo.mp4   (or .gif / .png)
 
 Devices, control rate and speeds come from device-parameters.json and the organiser's robot
 (5 Hz, 10 mm/s, 1 rad/s; guidewire travel 264.5 mm).
@@ -54,7 +54,7 @@ def main() -> None:
     ap.add_argument("--target", default="left_carotid@60", help="target spec (see stroke_nav.data.anatomy)")
     ap.add_argument("--start", default=None)
     ap.add_argument("--max-steps", type=int, default=600)
-    ap.add_argument("--record", default=None, help="run the oracle off-screen and save a .gif (or .png)")
+    ap.add_argument("--record", default=None, help="run the oracle off-screen and save a smooth .mp4 / .gif (or the final .png)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--speed", type=float, default=1.0, help="autopilot speed relative to real time")
     ap.add_argument("--autoplay", choices=["plan", "oracle"], default=None,
@@ -69,7 +69,7 @@ def main() -> None:
     env.reset(seed=args.seed)
 
     if args.record:
-        record(env, args.record)
+        record(env, args.record, args.speed)
         return
 
     from stroke_nav.viz.scene import Scene
@@ -90,16 +90,21 @@ def main() -> None:
         print(markdown_table([summarize("this episode", [m])]), flush=True)
 
     def do_step(action, render: bool = True) -> None:
+        """One control step. With ``render`` the move is animated over the following frames
+        (``tick`` draws in-between positions), instead of jumping to the new state."""
         if state["done"]:
             return
+        scene.begin_step()
         _, _, term, trunc, info = env.step(np.asarray(action, dtype=float))
+        state["step_t"] = time.monotonic()
         if term or trunc:
             finish(info)
         if render:
-            scene.update(state["status"], KEYS_HELP)
+            state["animating"] = True
 
     def reset(options=None) -> None:
         env.reset(options=options)
+        scene._prev_state = None
         oracle.reset(env)
         state.update(done=False, auto=False, status="", follower=None, follow=False, followed=False)
         scene.clear("plan", "plan_labels", "dijkstra")
@@ -199,23 +204,33 @@ def main() -> None:
 
     pl.enable_point_picking(callback=on_pick, show_message=False, show_point=False, left_clicking=False)
 
+    period = env.cfg.sim.dt / args.speed  # wall-clock time per control step
+
     def tick(*_):
-        """Autopilot at real-time pace: run the simulation steps that are due since the autopilot
-        started (scaled by --speed), then draw one frame. Slow frames drop, the robot keeps time."""
-        follow = state["follow"] and state["follower"] is not None
-        if state["done"] or not (state["auto"] or follow):
-            state["clock"] = None
-            return
+        """~60 frames per second. The autopilot runs the simulation steps that are due since it
+        started (real-time pace, scaled by --speed); every frame then draws the devices part-way
+        between the last two simulated states, so motion is smooth although control runs at 5 Hz."""
         now = time.monotonic()
-        if state.get("clock") is None:
-            state["clock"] = (now, env.steps)
-        t0, s0 = state["clock"]
-        due = s0 + int((now - t0) * args.speed / env.cfg.sim.dt) + 1
-        for _ in range(max(0, min(due - env.steps, 12))):
-            if state["done"]:
-                break
-            do_step(oracle.act(env) if state["auto"] else state["follower"].act(env), render=False)
-        scene.update(state["status"], KEYS_HELP)
+        follow = state["follow"] and state["follower"] is not None
+        running = not state["done"] and (state["auto"] or follow)
+        if running:
+            if state.get("clock") is None:
+                state["clock"] = (now, env.steps)
+            t0, s0 = state["clock"]
+            due = s0 + int((now - t0) / period) + 1
+            for _ in range(max(0, min(due - env.steps, 12))):
+                if state["done"]:
+                    break
+                do_step(oracle.act(env) if state["auto"] else state["follower"].act(env), render=False)
+            state["animating"] = True
+        else:
+            state["clock"] = None
+        if not state.get("animating"):
+            return
+        alpha = (now - state.get("step_t", now)) / period
+        scene.update(state["status"], KEYS_HELP, alpha=min(alpha, 1.0))
+        if alpha >= 1.0 and not running:
+            state["animating"] = False
 
     scene.update("", KEYS_HELP)
     scene.set_front_view()
@@ -225,7 +240,7 @@ def main() -> None:
     # The window must exist before the timer is created: on Windows a VTK timer created earlier
     # is tied to no window and never fires (the autopilot keys then do nothing).
     pl.show(interactive_update=True, auto_close=False)
-    pl.add_timer_event(max_steps=10_000_000, duration=60, callback=tick)
+    pl.add_timer_event(max_steps=10_000_000, duration=15, callback=tick)
     if args.autoplay == "plan":
         toggle_follow()
     elif args.autoplay == "oracle":
@@ -246,11 +261,12 @@ def save_selection(env: VesselNavEnv, model: str, **nodes) -> Path:
     return path
 
 
-def record(env: VesselNavEnv, out: str) -> None:
-    """Run the oracle off-screen and save frames to a GIF (or the final frame to a PNG)."""
+def record(env: VesselNavEnv, out: str, speed: float = 1.0, fps: int = 30) -> None:
+    """Run the oracle off-screen and save a smooth recording (.mp4 or .gif: in-between frames are
+    interpolated, playback at ``speed`` x real time) or the final frame (.png)."""
     import pyvista as pv
 
-    from stroke_nav.viz.scene import Scene
+    from stroke_nav.viz.scene import Scene, frames_per_step, open_recording
 
     pl = pv.Plotter(off_screen=True, window_size=(760, 900))
     pl.set_background("white")
@@ -259,21 +275,24 @@ def record(env: VesselNavEnv, out: str) -> None:
     oracle.reset(env)
     scene.update("oracle")
     scene.set_front_view()
-    gif = out.lower().endswith(".gif")
-    if gif:
-        pl.open_gif(out, fps=12)
+    movie = not out.lower().endswith(".png")
+    if out.lower().endswith(".gif"):
+        fps = min(fps, 15)  # GIFs get large and slow at high frame rates
+    n = frames_per_step(fps, env.cfg.sim.dt, speed)
+    if movie:
+        open_recording(pl, out, fps)
         pl.write_frame()
     done, info = False, {}
     while not done:
+        scene.begin_step()
         _, _, term, trunc, info = env.step(oracle.act(env))
         done = term or trunc
-        if gif and (env.steps % 2 == 0 or done):
-            scene.update("oracle autopilot")
-            pl.write_frame()
+        if movie:
+            scene.write_step_frames(n, "oracle autopilot")
     m = episode_start_metrics(info["episode_metrics"])
     scene.update(f"{'SUCCESS' if m['success'] else 'FAILED'} in {m['procedure_time_s']:.1f} s")
-    if gif:
-        for _ in range(12):
+    if movie:
+        for _ in range(fps):  # hold the final frame for a second
             pl.write_frame()
         pl.close()
     else:

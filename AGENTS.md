@@ -53,7 +53,7 @@ py -3.12 -m venv --system-site-packages .venv
 ## Commands
 
 ```bash
-.venv\Scripts\python.exe -m pytest -q                                   # full suite (75 tests), about 2 min
+.venv\Scripts\python.exe -m pytest -q                                   # full suite (76 tests), about 2 min
 .venv\Scripts\python.exe scripts/playground.py --model 0248_H_AOCERE_CAS   # interactive 3D window
 .venv\Scripts\python.exe scripts/plan_path.py --target right_carotid@40 --follow 20 --record
 .venv\Scripts\python.exe scripts/evaluate.py --policies oracle,random,forward --episodes 50
@@ -98,7 +98,8 @@ py -3.12 -m venv --system-site-packages .venv
 ## Known issues
 
 - **Playground timers on Windows:** a pyvista/VTK timer created before the window exists never fires. `scripts/playground.py` therefore opens the window first (`pl.show(interactive_update=True, auto_close=False)`), then adds the timer, then calls `pl.iren.start()`. Keep that order.
-- **Interactive rendering is slow** (around 1 frame/s while GPU training runs). The autopilot steps the simulation at real-time pace and draws once per frame, and `Scene.update` updates actors in place. Don't go back to recreating actors every frame.
+- **Smooth animation:** control runs at 5 Hz, so drawing only the simulated states jumps 2 mm and up to 11.5° per step. The playground and `demo_astar.py` tick at about 60 frames/s and draw in-between frames: call `Scene.begin_step()` before `env.step`, then `Scene.update(alpha=...)` (recordings use `Scene.write_step_frames`). A frame takes about 7 ms on an idle GPU but can drop to about 1 frame/s while GPU training runs. `Scene.update` updates actors in place; don't go back to recreating actors every frame.
+- **Drawn devices:** `TrackSim.device_polyline` draws only the inserted length and curves the bent tip into `tracking_points(dev)[0]`, so the drawn tip ends on the tip marker and stays inside the lumen. The organiser env's fluoro image uses the same polyline.
 - **Their live stack accepts one physics page.** The bridge's command node sends commands only to the newest browser connection, so a second `catheter_guidewire_ros2.html` tab steals control and also publishes its own states. `organiser_stack.ps1 status` counts connected pages; close extras.
 - **Their robot's travel is limited:** guidewire 264.5 mm, catheter at most 229.2 mm ahead of the wire (`RobotSpec`), enforced in our simulator by default. The cas-reference goal is 288 mm along the vessels and the distal ICA/M1 of 0248 450-530 mm, so they are out of reach as configured. Default targets are therefore mid-carotid (`@20-70`).
 - **The simulator is kinematic.** Devices ride the centerlines, and roll picks the branch at bifurcations. There are no wall forces, so contact force reports n/a and path-following error is 0. Policies trained here need fine-tuning in the organiser's rod-physics simulator.

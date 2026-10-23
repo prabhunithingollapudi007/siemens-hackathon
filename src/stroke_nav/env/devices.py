@@ -337,44 +337,72 @@ class TrackSim:
         n1 = n1 / nn if nn > 1e-6 else _any_perpendicular(t)
         return t, n1, np.cross(t, n1)
 
-    def tip_direction(self, device: int) -> np.ndarray:
-        """Direction the device's bent tip points to (straight for a wire inside the catheter)."""
-        s = self.L[device]
-        t, n1, n2 = self.frame_at(s)
-        if device == WIRE and self.L[WIRE] < self.L[CATH]:
+    def tip_direction(self, device: int, Ls: np.ndarray | None = None, phis: np.ndarray | None = None) -> np.ndarray:
+        """Direction the device's bent tip points to (straight for a wire inside the catheter).
+
+        ``Ls``/``phis`` (both devices) override the current insertions and rolls, e.g. to draw an
+        in-between frame; they must lie on the current track.
+        """
+        Ls = self.L if Ls is None else Ls
+        phis = self.phi if phis is None else phis
+        t, n1, n2 = self.frame_at(Ls[device])
+        if device == WIRE and Ls[WIRE] < Ls[CATH]:
             return t
         th = np.deg2rad(self.p.device(device).tip_angle_deg)
-        b = np.cos(self.phi[device]) * n1 + np.sin(self.phi[device]) * n2
+        b = np.cos(phis[device]) * n1 + np.sin(phis[device]) * n2
         d = np.cos(th) * t + np.sin(th) * b
         return d / np.linalg.norm(d)
 
-    def tracking_points(self, device: int, spacing: float = 2.0) -> np.ndarray:
+    def _tip_offset(self, device: int, Ls: np.ndarray, phis: np.ndarray) -> np.ndarray:
+        """Sideways displacement of the bent tip's end from the centerline at the device's arc
+        position: towards the bend, at most ``tip_offset_frac`` of the local vessel radius."""
+        tl = min(self.p.device(device).tip_length_mm, max(float(Ls[device]), 0.0))
+        d = self.tip_direction(device, Ls, phis)
+        t, _, _ = self.frame_at(Ls[device])
+        lat = d - np.dot(d, t) * t
+        n = np.linalg.norm(lat)
+        if n < 1e-9:
+            return np.zeros(3)
+        r = float(self.anat.radius[self.node_at(Ls[device])])
+        return min(tl * n, self.p.tip_offset_frac * r) * lat / n
+
+    def tracking_points(self, device: int, spacing: float = 2.0, Ls: np.ndarray | None = None,
+                        phis: np.ndarray | None = None) -> np.ndarray:
         """Three points along the device tip (stEVE-style): bent tip end, bend start, one more back.
 
         The bent tip lies inside the lumen: its end sits at the device's arc position, displaced
         sideways towards the bend by at most ``tip_offset_frac`` of the local vessel radius (a long
         J-tip is pressed against the wall rather than sticking out of the vessel).
         """
-        tl = self.p.device(device).tip_length_mm
-        L = self.L[device]
-        d = self.tip_direction(device)
-        t, _, _ = self.frame_at(L)
-        lat = d - np.dot(d, t) * t
-        n = np.linalg.norm(lat)
-        r = float(self.anat.radius[self.node_at(L)])
-        off = min(tl * n, self.p.tip_offset_frac * r)
-        tip_end = self.position_at(L) + (off * lat / n if n > 1e-9 else 0.0)
-        s_b = L - tl
+        Ls = self.L if Ls is None else Ls
+        phis = self.phi if phis is None else phis
+        L = float(Ls[device])
+        tip_end = self.position_at(L) + self._tip_offset(device, Ls, phis)
+        s_b = L - self.p.device(device).tip_length_mm
         return np.stack([tip_end, self.position_at(s_b), self.position_at(s_b - spacing)])
 
-    def device_polyline(self, device: int, step_mm: float = 2.0) -> np.ndarray:
-        """Points along the inserted part of a device, for drawing (includes the bent tip)."""
-        L = self.L[device]
-        tl = self.p.device(device).tip_length_mm
-        s = np.arange(0.0, max(L - tl, 0.0), step_mm)
-        body = [self.position_at(x) for x in s] + [self.position_at(max(L - tl, 0.0))]
-        tip = body[-1] + tl * self.tip_direction(device)
-        return np.array(body + [tip])
+    def device_polyline(self, device: int, step_mm: float = 2.0, Ls: np.ndarray | None = None,
+                        phis: np.ndarray | None = None) -> np.ndarray:
+        """Points along the inserted part of a device, for drawing.
+
+        Only the inserted length is drawn. The shaft follows the centerline; over the last tip
+        length it curves smoothly (zero slope at the bend start) to the bent tip's end, so the
+        drawing ends exactly at ``tracking_points(device)[0]`` and stays inside the lumen.
+        """
+        Ls = self.L if Ls is None else Ls
+        phis = self.phi if phis is None else phis
+        L = float(Ls[device])
+        if L <= 1e-6:
+            return self.position_at(0.0)[None, :]
+        tl = min(self.p.device(device).tip_length_mm, L)
+        s_b = L - tl
+        body_s = np.arange(0.0, s_b, step_mm)
+        n_tip = max(int(np.ceil(tl / min(step_mm, 2.0))), 2)
+        tip_s = np.linspace(s_b, L, n_tip + 1)
+        off = self._tip_offset(device, Ls, phis)
+        pts = [self.position_at(x) for x in body_s]
+        pts += [self.position_at(x) + ((x - s_b) / tl) ** 2 * off for x in tip_s]
+        return np.array(pts)
 
 
 def _any_perpendicular(t: np.ndarray) -> np.ndarray:
