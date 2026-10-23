@@ -393,6 +393,8 @@ cas-reference goal (right external carotid) in 151-165 steps (median 153, about 
   actor's deterministic action onto the labels. It also warm-starts both critics on the Monte-Carlo
   return, so SAC fine-tuning can start from it. 40 epochs take 30 s on the RTX 3060.
 - `eval_lockstep.py` runs a model deterministically, as their `evaluation.py` does.
+- `demo_lockstep.py` shows one episode in two visible Chrome windows (their physics page and their
+  noisy viewer) and records a video: their physics view next to the policy's fluoro input.
 
 | Policy (lockstep, their physics) | Episodes | Success | Time to goal | Final distance | Peak force |
 |---|---|---|---|---|---|

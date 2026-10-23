@@ -177,16 +177,22 @@ class Cdp:
 
 
 class LockstepPage:
-    """One of their pages in its own headless Chrome, with the lockstep harness injected."""
+    """One of their pages in its own Chrome (headless unless ``window`` = (x, y, w, h) is given), with
+    the lockstep harness injected. A visible page only redraws when we run its frames."""
 
-    def __init__(self, url: str, debug_port: int, profile: Path):
-        self.url, self.debug_port, self.profile = url, debug_port, profile
+    def __init__(self, url: str, debug_port: int, profile: Path, window: tuple[int, int, int, int] | None = None):
+        self.url, self.debug_port, self.profile, self.window = url, debug_port, profile, window
         self.proc: subprocess.Popen | None = None
         self.cdp: Cdp | None = None
 
     def start(self, timeout_s: float = 60.0) -> "LockstepPage":
         self.profile.mkdir(parents=True, exist_ok=True)
-        args = [_chrome(), *RENDERER_FLAGS, "--headless=new", f"--remote-debugging-port={self.debug_port}",
+        if self.window is None:
+            show = ["--headless=new"]
+        else:
+            x, y, w, h = self.window
+            show = [f"--window-position={x},{y}", f"--window-size={w},{h}", "--new-window"]
+        args = [_chrome(), *RENDERER_FLAGS, *show, f"--remote-debugging-port={self.debug_port}",
                 f"--user-data-dir={self.profile}", "about:blank"]
         self.proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -224,6 +230,11 @@ class LockstepPage:
 
     def mesh_info(self) -> str:
         return self.cdp.eval("(document.getElementById('meshInfo') || {}).textContent || ''") or ""
+
+    def screenshot(self, quality: int = 80) -> bytes:
+        """JPEG of the page as currently drawn."""
+        r = self.cdp.call("Page.captureScreenshot", {"format": "jpeg", "quality": quality})
+        return base64.b64decode(r["data"])
 
     def close(self) -> None:
         if self.cdp is not None:
@@ -396,7 +407,7 @@ class LockstepBridge:
     image_min_interval_s = 0.05  # noisy viewer: at most one image per 50 ms
 
     def __init__(self, worker: int = 0, seed: int = 0, ports: Ports = Ports(), robot: RobotModel = RobotModel(),
-                 noise: NoiseModel = NoiseModel(), timeout_s: float = 120.0):
+                 noise: NoiseModel = NoiseModel(), timeout_s: float = 120.0, visible: bool = False):
         self.ports = ports
         self.status_file = ensure_servers(ports)
         obs = organiser_rl("observation")
@@ -406,8 +417,11 @@ class LockstepBridge:
                  f"&ws_port_base={WS_PORT_BASE}&main_port={ports.web}&noisy_port={ports.web + 1}")
         profiles = Path(os.environ.get("LOCALAPPDATA", "/tmp")) / "stroke-nav" / "lockstep"
         dbg = 9330 + 2 * worker
-        self.physics = LockstepPage(f"http://localhost:{ports.web}/{PHYSICS_HTML}{query}", dbg, profiles / f"physics-{worker}")
-        self.viewer = LockstepPage(f"http://localhost:{ports.web + 1}/{NOISY_HTML}{query}", dbg + 1, profiles / f"viewer-{worker}")
+        self.physics = LockstepPage(f"http://localhost:{ports.web}/{PHYSICS_HTML}{query}", dbg, profiles / f"physics-{worker}",
+                                    window=(0, 0, 1100, 900) if visible else None)
+        self.viewer = LockstepPage(f"http://localhost:{ports.web + 1}/{NOISY_HTML}{query}", dbg + 1, profiles / f"viewer-{worker}",
+                                   window=(1100, 0, 700, 900) if visible else None)
+        self.last_viewer_jpeg: bytes | None = None  # the noisy viewer's latest RL image (480 px JPEG)
         self.robot = Robot(robot)
         self.noise = {"guidewire": NoiseChannel(noise, seed * 2 + 1), "catheter": NoiseChannel(noise, seed * 2 + 2)}
         self.timeout_s = timeout_s
@@ -612,21 +626,24 @@ class LockstepBridge:
             raise RuntimeError(f"noisy viewer did not produce an image: errors {v.eval('__ls.errors()')}, "
                                f"queued frames {v.eval('__ls.queued()')}, sockets {v.eval('__ls.connected()')}, "
                                f"mesh {self.viewer.mesh_info()!r}")
-        with Image.open(io.BytesIO(base64.b64decode(b64))) as decoded:
+        self.last_viewer_jpeg = base64.b64decode(b64)
+        with Image.open(io.BytesIO(self.last_viewer_jpeg)) as decoded:
             img = np.asarray(decoded.convert("L").resize((self._image_shape[2], self._image_shape[1])), dtype=np.uint8)
         return img[None, :, :]
 
 
 # ---------------------------------------------------------------------- env
-def make_env(worker: int = 0, seed: int = 0, goal_world_m=None, max_steps: int | None = None):
+def make_env(worker: int = 0, seed: int = 0, goal_world_m=None, max_steps: int | None = None, visible: bool = False):
     """Their ``OpenNG3Env`` on a ``LockstepBridge``; goals from the cas-reference scenario unless
-    ``goal_world_m`` (world metres) is given. Configuration as ``HCMR-EV-RL/configs/online_rl.json``."""
+    ``goal_world_m`` (world metres) is given. Configuration as ``HCMR-EV-RL/configs/online_rl.json``.
+    ``visible`` shows both pages in Chrome windows instead of running them headless."""
     env_mod, action, goal, scenario = (organiser_rl(m) for m in ("env", "action", "goal", "scenario"))
     e = DEFAULT_SPEC.environment
     a = DEFAULT_SPEC.action
     # one asset server per worker: it holds a single "authoritative" page session, so workers sharing
     # one got each other's mesh-to-world transform (wrong goals, every episode failed)
-    bridge = LockstepBridge(worker=worker, seed=seed, ports=Ports(web=8100 + 10 * worker, asset=8102 + 10 * worker))
+    bridge = LockstepBridge(worker=worker, seed=seed, ports=Ports(web=8100 + 10 * worker, asset=8102 + 10 * worker),
+                            visible=visible)
     if goal_world_m is not None:
         sampler = goal.FixedGoal(tuple(float(v) for v in goal_world_m))
     else:  # their training: ScenarioGoalSampler with the physics page's acknowledged transform

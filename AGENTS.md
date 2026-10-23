@@ -66,6 +66,7 @@ py -3.12 -m venv --system-site-packages .venv
 .venv\Scripts\python.exe scripts/record_demos.py --episodes 60 --sigmas 0,0.2,0.4 --workers 4 --max-steps 300   # expert demos on their physics (lockstep)
 .venv\Scripts\python.exe scripts/train_bc.py --demos runs/demos/cas-reference --device cuda                  # behaviour-clone into the hand-over SAC model
 .venv\Scripts\python.exe scripts/eval_lockstep.py --model runs/<run_id>/final-model.zip --workers 4          # evaluate on their physics (--expert for the expert)
+.venv\Scripts\python.exe scripts/demo_lockstep.py --record results/demo_bc_policy.mp4                       # watch the policy on their pages (visible Chrome) and record it
 ```
 
 - **Off-screen rendering** works with pyvista (`--record`). Interactive windows need a desktop session.
