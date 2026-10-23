@@ -38,13 +38,17 @@ def _git_commit() -> str | None:
 
 
 def write_run_dir(run_dir: str | Path, spec: OrganiserSpec = DEFAULT_SPEC, model_path: str | Path | None = None,
-                  frame: OrganiserFrame | None = None, extra: dict | None = None) -> Path:
-    """Create/complete an organiser-format run folder. ``model_path`` is copied to final-model.zip."""
+                  frame: OrganiserFrame | None = None, extra: dict | None = None,
+                  scenario_manifest: dict | None = None) -> Path:
+    """Create/complete an organiser-format run folder. ``model_path`` is copied to final-model.zip.
+    ``scenario_manifest``: the scenario the run is evaluated on (their ``scenario.json``; cas-reference
+    by default, another one for a deployment on a variant mesh)."""
+    manifest = scenario_manifest or CAS_REFERENCE_MANIFEST
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     device_doc = spec.device_parameters()
     (run_dir / "device-parameters.json").write_text(json.dumps(device_doc, indent=2, sort_keys=True), encoding="utf-8")
-    (run_dir / "scenario.json").write_text(json.dumps(CAS_REFERENCE_MANIFEST, indent=2, sort_keys=True), encoding="utf-8")
+    (run_dir / "scenario.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     cfg = spec.online_rl_config()
     resolved = {
         "action": cfg["action"],
@@ -53,7 +57,7 @@ def write_run_dir(run_dir: str | Path, spec: OrganiserSpec = DEFAULT_SPEC, model
         "environment": cfg["environment"],
         "goals_file": cfg["goals_file"],
         "run_id": run_dir.name,
-        "scenario": {"mesh_sha256": CAS_REFERENCE_MANIFEST["mesh_sha256"], "name": CAS_REFERENCE_MANIFEST["name"]},
+        "scenario": {"mesh_sha256": manifest["mesh_sha256"], "name": manifest["name"]},
         "schema_version": 1,
         "training": cfg["training"],
     }
@@ -72,11 +76,14 @@ def write_run_dir(run_dir: str | Path, spec: OrganiserSpec = DEFAULT_SPEC, model
     return run_dir
 
 
-def check_run_dir(run_dir: str | Path) -> list[str]:
-    """Problems that would make the organiser's evaluation reject this run folder (empty = OK)."""
+def check_run_dir(run_dir: str | Path, scenario_manifest: dict | None = None,
+                  model: str = "final-model.zip") -> list[str]:
+    """Problems that would make the organiser's evaluation reject this run folder (empty = OK).
+    ``scenario_manifest``: the scenario it must match (cas-reference by default)."""
+    manifest = scenario_manifest or CAS_REFERENCE_MANIFEST
     run_dir = Path(run_dir)
     problems = []
-    for name in ("resolved-config.json", "device-parameters.json", "scenario.json", "final-model.zip"):
+    for name in ("resolved-config.json", "device-parameters.json", "scenario.json", model):
         if not (run_dir / name).is_file():
             problems.append(f"missing {name}")
     if problems:
@@ -92,10 +99,12 @@ def check_run_dir(run_dir: str | Path) -> list[str]:
     except ValueError as e:
         problems.append(f"device-parameters.json invalid: {e}")
     scen = json.loads((run_dir / "scenario.json").read_text(encoding="utf-8"))
-    if scen != CAS_REFERENCE_MANIFEST:
-        problems.append("scenario.json differs from the cas-reference manifest")
-    if cfg.get("scenario", {}).get("mesh_sha256") != CAS_REFERENCE_MANIFEST["mesh_sha256"]:
+    if scen != manifest:
+        problems.append(f"scenario.json differs from the {manifest['name']} manifest")
+    if cfg.get("scenario", {}).get("mesh_sha256") != manifest["mesh_sha256"]:
         problems.append("resolved-config.json scenario mesh hash differs")
+    if cfg.get("scenario", {}).get("name") != manifest["name"]:
+        problems.append("resolved-config.json scenario name differs")
     return problems
 
 

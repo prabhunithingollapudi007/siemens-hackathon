@@ -338,6 +338,16 @@ python scripts/export_handover.py --run-dir runs/stroke-nav-bc-v1 --plan-target 
 ./sys startup --mode showcase --scenario cas-reference --run-id stroke-nav-bc-v1 --model final-model.zip --episodes 10 --visible
 ```
 
+**Deploy a planned case** (A\* + entry roll and the behaviour-cloned policy, on the case's variant mesh):
+
+```bash
+python scripts/export_deployment.py --case results/cases/v70-left                          # handover/stroke-nav-v70-left.zip
+python scripts/check_deployment.py --bundle handover/stroke-nav-v70-left --episodes 1 --visible   # both, from the bundle, through their evaluator on their physics
+# on their Linux machine, bundle unzipped next to HCMR-EV-OpenNG3, from HCMR-EV-OpenNG3:
+bash ../stroke-nav-v70-left/deploy.sh install
+bash ../stroke-nav-v70-left/deploy.sh astar-roll 5 --visible       # or: bc 5 --visible; then: results
+```
+
 [docs/HANDOVER.md](docs/HANDOVER.md) lists what matches their stack and what is approximate, what the
 bundle contains, and how to read their results (including what `aborted` episodes mean). Their own
 stack also runs on this laptop with `powershell -ExecutionPolicy Bypass -File tools\organiser_stack.ps1 start`

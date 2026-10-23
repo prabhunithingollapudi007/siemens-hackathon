@@ -27,7 +27,7 @@ patient vessel models from the Vascular Model Repository (VMR). It contains:
 | `src/stroke_nav/agents/` | `ScriptedOracle`, `RandomAgent`, `TrajectoryFollower`, `ClosedLoopRouteFollower` (A\* route driven only by measured tip pose; runs on both simulators), `EntryRollExpert` (roll at the entry then push, from the organiser observation; the expert for behaviour cloning), `RollTable` (which entry roll reaches which point, from `calibrate_rolls.py`), `RecoveringExpert` (DAgger teacher that retracts and re-rolls), ACT-style action-chunking policy on the organiser observation (`act.py`) |
 | `src/stroke_nav/eval/` | START metrics and tables |
 | `src/stroke_nav/viz/` | pyvista scene for the playground and renders |
-| `src/stroke_nav/organiser/` | organiser compatibility: spec (device parameters, measured robot limits), frame transform, fluoro image, `OrganiserCompatEnv`, run-folder export, ROS 2 templates, scenarios for other meshes in their format (`scenario.py`: a VMR variant surface decimated and converted to their mesh frame, validated with their loader, under `data/scenarios/`) |
+| `src/stroke_nav/organiser/` | organiser compatibility: spec (device parameters, measured robot limits), frame transform, fluoro image, `OrganiserCompatEnv`, run-folder export, ROS 2 templates, deployment templates for a planned case (`deploy/`: `deploy.sh` for their `./sys`, `evaluate_controller.py` = their evaluator with a scripted controller in place of `SAC.load`; runs in their container, so self-contained), scenarios for other meshes in their format (`scenario.py`: a VMR variant surface decimated and converted to their mesh frame, validated with their loader, under `data/scenarios/`) |
 | `src/stroke_nav/organiser/live/` | their live stack: headless physics page (`renderer.py`), open-loop probe (`probe.py` + `probe_ros.py`), closed-loop bridge (`bridge.py` + `relay_ros.py`), lockstep env on their pages without Docker or ROS (`lockstep.py` + `lockstep_page.js`; `make_env(scenario_name=..., scenario_root=...)` for other meshes), rollouts of any controller on their physics recorded as `EpisodeTrace` with page restarts (`rollout.py`: `lockstep_pool`, `RouteFollowerOnObservation`, `SACPolicy`); the `*_ros.py` files run inside their container and must stay self-contained |
 | `compat/openng3_rl/` | stand-in for the organiser's `openng3_rl.policy.FluoroStateExtractor` (see invariants) |
 | `scripts/` | command-line entry points (fetch, plot, playground, plan, evaluate, compare, train, check, export, `measure_gap`, `run_astar`) |
@@ -62,6 +62,8 @@ py -3.12 -m venv --system-site-packages .venv
 .venv\Scripts\python.exe scripts/train_sac.py --total-timesteps 50000 --device cuda
 .venv\Scripts\python.exe scripts/check_handover.py --run-dir runs/<run_id>
 .venv\Scripts\python.exe scripts/export_handover.py --run-dir runs/<run_id> --plan-target right_carotid_external@21
+.venv\Scripts\python.exe scripts/export_deployment.py --case results/cases/v70-left                  # A* + roll and BC of a case, for their ./sys -> handover/stroke-nav-v70-left (docs/HANDOVER.md)
+.venv\Scripts\python.exe scripts/check_deployment.py --bundle handover/stroke-nav-v70-left --episodes 1      # bundle through their evaluator on their physics (lockstep)
 .venv\Scripts\python.exe scripts/run_astar.py --target right_carotid@40 --sim ours          # closed-loop A* (--sim theirs: live stack)
 .venv\Scripts\python.exe scripts/demo_astar.py                                         # 3D demo of A* with the organiser devices (--record x.gif)
 .venv\Scripts\python.exe scripts/measure_gap.py                                        # ours vs their physics (live stack needed)
@@ -108,6 +110,7 @@ py -3.12 -m venv --system-site-packages .venv
    - Do not hard-code device geometry, speeds or travel anywhere else. `SimParams()` holds generic research values for tests only.
    - `STROKE_NAV_DEVICE_PARAMS` selects another file for experiments. `tests/test_device_parameters.py` checks the repo file and the plumbing.
 5. **`scenario.json` written to run folders must equal their `cas-reference` manifest** (mesh sha256 `04fbd581…`).
+   - Exception: a case deployment (`export_deployment.py`) runs on its own scenario, shipped in the bundle; there `scenario.json` must equal that scenario's manifest (`check_run_dir(run, manifest)`).
 6. **The frame transform is fitted, not assumed.** Their goal file's comment claims an axis flip that the geometry does not have. Refit with `organiser.frame.fit_frame` if the mesh changes.
 
 ## Known issues

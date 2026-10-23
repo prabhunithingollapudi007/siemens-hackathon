@@ -134,6 +134,44 @@ What to watch for:
   the robot's 50 ms delay and the noise node are emulated from their sources, not run in their
   containers.
 
+## Deploying a planned case on its own scenario
+
+A case from `plan_case.py` (docs/CASE_PLANNING.md) runs on a stenosis-variant mesh, not on cas-reference.
+`export_deployment.py` packages its two successful methods for their stack: the A\* route + calibrated
+entry roll, and the SAC policy behaviour-cloned from that controller.
+
+```bash
+.venv\Scripts\python.exe scripts/export_deployment.py --case results/cases/v70-left      # -> handover/stroke-nav-v70-left(.zip)
+.venv\Scripts\python.exe scripts/check_deployment.py --bundle handover/stroke-nav-v70-left --episodes 1 --visible
+```
+
+The bundle mirrors their `HCMR-EV-RL/` folder:
+
+| Path | Contents |
+|---|---|
+| `scenarios/<variant>-<target>/` | the variant mesh with **only the case goal**: their scenarios draw a goal uniformly per episode, and the variant scenario under `data/scenarios/` holds both lesions |
+| `runs/stroke-nav-bc-<case>/` | SAC run folder; `scenario.json` equals that scenario's manifest (instead of cas-reference) |
+| `runs/stroke-nav-astar-roll-<case>/` | the same run files with `controller.json` (entry roll and route), `entry_roll.py` (copied from `stroke_nav.agents.entry_roll`) and `evaluate_controller.py` |
+| `deploy.sh` | `install`, `bc N [--visible]`, `astar-roll N [--visible]`, `results`, `shutdown` |
+
+On their side (Linux with Docker), from `HCMR-EV-OpenNG3`, with the bundle unzipped next to it:
+
+```bash
+bash ../stroke-nav-v70-left/deploy.sh install
+bash ../stroke-nav-v70-left/deploy.sh astar-roll 5 --visible
+bash ../stroke-nav-v70-left/deploy.sh bc 5 --visible
+bash ../stroke-nav-v70-left/deploy.sh results
+```
+
+- `bc` is their showcase unchanged (`./sys startup --mode showcase --scenario ... --run-id ... --model final-model.zip`).
+- `astar-roll` uses the same showcase startup, then swaps their SAC evaluator, which is stopped before it
+  acts, for `evaluate_controller.py` in the same image. That script is their `openng3_rl.evaluation.main`
+  with `SAC.load` replaced by the controller, so checks, env, success rule, rollout capture and
+  `episodes.json` are theirs.
+- `check_deployment.py` checks the bundle with their code: scenario loader, device-parameter hash and the
+  run's `scenario.json` against the manifest. It then runs both runs from the bundle files through their
+  `evaluation.run_evaluation` on their physics in lockstep.
+
 ## Frame transform
 
 ```

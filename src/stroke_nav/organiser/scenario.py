@@ -96,21 +96,56 @@ def write_scenario(model: str, variant: str | None, goals_vmr_mm, root: str | Pa
             f.write(f"v {x:.6f} {y:.6f} {z:.6f}\n")
         for a, b, c in tri + 1:
             f.write(f"f {a} {b} {c}\n")
+    _write_goals_and_manifest(out, name, goals_cm)
+    if validate:
+        validate_scenario(name, root)
+    return out
+
+
+def _write_goals_and_manifest(out: Path, name: str, goals_cm: np.ndarray, header: str | None = None) -> dict:
+    """``goals.txt`` (mesh cm) and ``scenario.json`` next to an existing ``vessel.obj``; returns the manifest."""
     goals = out / "goals.txt"
     with open(goals, "w", encoding="utf-8", newline="\n") as f:
-        f.write(f"# Goals in the mesh frame (cm) for {name}; written by stroke_nav.organiser.scenario.\n")
-        for g in goals_cm:
+        f.write(f"# {header or f'Goals in the mesh frame (cm) for {name}'}; written by stroke_nav.organiser.scenario.\n")
+        for g in np.atleast_2d(goals_cm):
             f.write(f"{g[0]:.3f},{g[1]:.3f},{g[2]:.3f}\n")
     manifest = {
         "bake": dict(CAS_REFERENCE_MANIFEST.get("bake", {"axis": "authored", "flip": False, "roll_180": False})),
         "goal_frame": "mesh", "goals_file": "goals.txt", "goals_sha256": _sha256(goals),
-        "mesh_file": "vessel.obj", "mesh_format": "obj", "mesh_sha256": _sha256(obj),
+        "mesh_file": "vessel.obj", "mesh_format": "obj", "mesh_sha256": _sha256(out / "vessel.obj"),
         "meters_per_unit": CAS_REFERENCE_MANIFEST.get("meters_per_unit", 0.01), "name": name, "schema_version": 1,
         "selection": "uniform", "units": "cm",
     }
     (out / "scenario.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return manifest
+
+
+def read_goals_cm(scenario_dir: str | Path) -> np.ndarray:
+    """The goals of a scenario folder (mesh frame, cm), one row per goal."""
+    rows = []
+    for line in (Path(scenario_dir) / "goals.txt").read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            rows.append([float(v) for v in line.split(",")])
+    return np.asarray(rows, dtype=np.float64)
+
+
+def scenario_with_goals(source: str | Path, out_root: str | Path, name: str, goal_indices: list[int],
+                        validate: bool = True) -> Path:
+    """Copy a scenario folder's mesh into ``<out_root>/<name>/`` with only the chosen goals.
+
+    Their scenarios draw a goal uniformly per episode, so a policy cloned for one lesion is deployed on a
+    scenario holding only that lesion's goal. The mesh (and its sha256) is unchanged."""
+    import shutil
+
+    source = Path(source)
+    goals_cm = read_goals_cm(source)[list(goal_indices)]
+    out = Path(out_root) / name
+    out.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source / "vessel.obj", out / "vessel.obj")
+    _write_goals_and_manifest(out, name, goals_cm, header=f"Goals in the mesh frame (cm) for {name}, from {source.name} goals {list(goal_indices)}")
     if validate:
-        validate_scenario(name, root)
+        validate_scenario(name, out_root)
     return out
 
 
