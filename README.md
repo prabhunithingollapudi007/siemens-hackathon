@@ -20,17 +20,33 @@ in 30 carotid-stenosis variants.
 
 ## Results
 
-| What | Where | Result |
+One episode per row on the organiser's physics unless a count is given; videos are 2× real time with
+their physics view on the left and the policy's fluoro input on the right (`results/` is not in git).
+
+| Demo | Runs on | Result |
 |---|---|---|
-| Behaviour-cloned SAC policy (organiser format) | organiser's XPBD physics, lockstep | **8/8** to their cas-reference goal, 30.4 s, 4.0 mm, peak force 0.009 N |
-| Case planner `plan_case.py` on the cas-reference target: A\*, entry-roll controller, BC, ACT in one 20-min run | organiser's physics, lockstep | roll, BC and ACT **6/6** each at 29 s (BC and ACT trained in ~10 min); A\* follower 0/6 on their rod; see [docs/CASE_PLANNING.md](docs/CASE_PLANNING.md) |
-| Constrained A\* with length, time and damage costs on the ICA lesions of two stenosis variants, executed with the calibrated entry roll | organiser's physics on the variant meshes, lockstep | plans in 10-40 ms; 70 % left lesion **reached in 27 s at 1.9 mm**, right lesion 9 mm short at full travel; local replan 143-350 edge states vs 620-1040 cold; see [docs/PLANNER.md](docs/PLANNER.md) |
-| Scripted expert `EntryRollExpert` (roll 120° at the entry, then push) | organiser's physics, lockstep | 60/60 demos, including with action noise |
-| Constrained A\* + trajectory follower, catheter to right M1 past an 85 % ICA stenosis | our simulator, 0248 | 20/20 in 26.5 s (plain shortest path: 0/20) |
+| A\* route + calibrated entry roll, 70 % left ICA lesion (`10Right70Left`, `left_carotid@140`) | organiser's physics | **reached in 27 s**, 1.8 mm from the lesion, peak force 5 mN |
+| Same, right ICA lesion (`right_carotid@118`) | organiser's physics | 9 mm short: the 301 mm route exceeds the 264.5 mm guidewire travel |
+| Behaviour-cloned policy from 12 of those demonstrations (3.6 min of training) | organiser's physics | **reached in 26.4 s**, 1.9 mm; passes the hand-over check |
+| Case planner on their cas-reference goal: entry roll, BC, ACT | organiser's physics | each **6/6** at 29 s; BC and ACT trained in about 10 min |
+| Behaviour-cloned SAC policy (hand-over bundle) | organiser's physics | **8/8**, 30.4 s, 4.0 mm, peak force 9 mN |
+| A\* planning on the centerline graph | CPU | 10-40 ms per route; local replan 143-350 edge states against 620-1040 for a cold plan |
+| A\* + trajectory follower, catheter to right M1 past an 85 % ICA stenosis | our simulator | 20/20 in 26.5 s (plain shortest path 0/20) |
 | Safety monitor on an imperfect policy | synthetic arch, stressed tracking | success 60 → 100 %, target overshoot 40 → 0 % |
 
-A video of the cloned policy on the organiser's physics page is written to `results/demo_bc_policy.mp4`
-by `scripts/demo_lockstep.py` (`results/` is not in git).
+### Demo commands
+
+```bash
+powershell -ExecutionPolicy Bypass -File tools\organiser_stack.ps1 stop        # their Docker stack would take the CPU
+python scripts/demo_astar_costs.py --visible                                   # A*: plan, evaluate, execute on their physics; both variants, Chrome windows
+python scripts/demo_lockstep.py --variant 10Right70Left --target left_carotid@140 --expert --slow-radius 8 --record results/astar_demo/astar_success.mp4        # video: A* success case
+python scripts/demo_lockstep.py --variant 10Right70Left --target right_carotid@118 --expert --slow-radius 8 --record results/astar_demo/astar_travel_limit.mp4  # video: travel-limit case
+python scripts/plan_case.py --variant 10Right70Left --target left_carotid@140 --case-id v70-left --methods astar,roll,bc --bc-demos 12 --sigmas 0,0.2 --eval-episodes 1   # 12 demos + behaviour cloning, ~6 min
+python scripts/demo_lockstep.py --model results/cases/v70-left/runs/bc/final-model.zip --variant 10Right70Left --target left_carotid@140 --record results/cases/v70-left/bc_success.mp4   # video: the clone
+python scripts/plan_case.py --target scenario --case-id cas-reference          # every method on their cas-reference goal, ~20 min
+```
+
+Details and the full tables: [docs/PLANNER.md](docs/PLANNER.md) and [docs/CASE_PLANNING.md](docs/CASE_PLANNING.md).
 
 ## Setup (Windows, Python 3.12)
 
