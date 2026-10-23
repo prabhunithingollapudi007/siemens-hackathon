@@ -34,7 +34,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from stroke_nav.agents.entry_roll import EntryRollExpert  # noqa: E402
 from stroke_nav.agents.roll_table import load_goal_set  # noqa: E402
 from stroke_nav.organiser import ensure_policy_importable  # noqa: E402
-from stroke_nav.organiser.live.lockstep import make_env  # noqa: E402
+from stroke_nav.organiser.live.lockstep import make_env, show_goal  # noqa: E402
 
 HEIGHT = 720
 LEFT_WIDTH = 880  # their 1100 x 900 physics window at 720 px high
@@ -71,14 +71,6 @@ def compose(physics_jpeg: bytes, fluoro_jpeg: bytes | None, lines: list[str], ba
         dd.rectangle((0, 0, left.width, 52), fill=(20, 110, 60))
         dd.text((16, 12), banner, fill=(255, 255, 255), font=_font(26))
     return np.asarray(frame)
-
-
-def show_goal(page, goal_world_m) -> None:
-    """Load ``goal_world_m`` into the physics page's goal marker via its goal-file input (mesh cm)."""
-    text = ",".join(f"{v * 100.0:.5f}" for v in goal_world_m)  # cas-reference: mesh cm x 0.01 = world m
-    page.cdp.eval("(() => { const dt = new DataTransfer(); dt.items.add(new File(['" + text + "'], "
-                  "'episode_goal.txt', { type: 'text/plain' })); const i = document.getElementById('goalFileInput'); "
-                  "i.files = dt.files; i.dispatchEvent(new Event('change')); return true; })()")
 
 
 def main() -> None:

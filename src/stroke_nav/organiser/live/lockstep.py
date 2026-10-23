@@ -633,6 +633,14 @@ class LockstepBridge:
 
 
 # ---------------------------------------------------------------------- env
+def show_goal(page, goal_world_m) -> None:
+    """Load ``goal_world_m`` into the physics page's goal marker via its goal-file input (mesh cm)."""
+    text = ",".join(f"{v * 100.0:.5f}" for v in goal_world_m)  # cas-reference: mesh cm x 0.01 = world m
+    page.cdp.eval("(() => { const dt = new DataTransfer(); dt.items.add(new File(['" + text + "'], "
+                  "'episode_goal.txt', { type: 'text/plain' })); const i = document.getElementById('goalFileInput'); "
+                  "i.files = dt.files; i.dispatchEvent(new Event('change')); return true; })()")
+
+
 class GoalSet:
     """Goal sampler for their ``OpenNG3Env`` (world metres): the goal given to ``set_next`` for the
     next reset, otherwise one of ``goals`` drawn uniformly with the env's RNG. The fluoro image still

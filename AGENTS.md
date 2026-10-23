@@ -70,6 +70,8 @@ py -3.12 -m venv --system-site-packages .venv
 .venv\Scripts\python.exe scripts/calibrate_rolls.py --workers 4                                             # entry-roll sweep on their physics -> results/lockstep/roll_sweep.json
 .venv\Scripts\python.exe scripts/make_goals.py --spacing 3 --per-branch 60                                  # reachable multi-target goal set (train/test/cas)
 # multi-target demos, BC and evaluation: record_demos.py / eval_lockstep.py / demo_lockstep.py take --goals results/lockstep/goals.json --split ... (see README §5)
+.venv\Scripts\python.exe scripts/pick_goals.py --target left_carotid@30 --target right_subclavian@40        # hand-picked goal set -> results/lockstep/manual_goals.json
+.venv\Scripts\python.exe scripts/teleop_lockstep.py --goals results/lockstep/manual_goals.json --episodes 3 # keyboard teleop demos on their physics -> runs/demos/manual
 ```
 
 - **Off-screen rendering** works with pyvista (`--record`). Interactive windows need a desktop session.

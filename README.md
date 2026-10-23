@@ -234,6 +234,34 @@ It learned the push, not the choice of roll or when to stop. Hand over `stroke-n
 the cas-reference goal). `scripts/finetune_sac_lockstep.py` (SAC fine-tuning from a BC model) is
 written but has not been run.
 
+**Manual goals and demonstrations.** A person picks the goals and drives the robot by keyboard on
+their physics. The recordings use the same format as `record_demos.py`, so `train_bc.py` trains on
+manual demos, scripted ones, or both.
+
+```bash
+python scripts/pick_goals.py --target left_subclavian@50 --target right_subclavian@40 --target right_carotid@60
+python scripts/pick_goals.py --target left_carotid@30 --split test --append       # add held-out goals
+python scripts/teleop_lockstep.py --goals results/lockstep/manual_goals.json --episodes 3 --out runs/demos/manual
+python scripts/train_bc.py --demos runs/demos/manual,runs/demos/multi-target --successful-only --device cuda --run-id stroke-nav-bc-manual
+python scripts/eval_lockstep.py --model runs/stroke-nav-bc-manual/final-model.zip --goals results/lockstep/manual_goals.json --split test
+```
+
+- **Picking goals:** `pick_goals.py` takes the repo's target specs (`branch@mm`, `xyz:...`;
+  `--branches` lists the branch names). It converts them to their world frame and prints the entry
+  roll whose recorded paths pass closest, with the miss in mm. A miss above 5 mm is probably out of
+  reach, and `--snap` moves such a goal onto the rod's path.
+- **Driving:** `teleop_lockstep.py` opens their two pages in Chrome, with the goal in the physics
+  view, plus a "teleop" window that shows the policy's fluoro input, the distance, the insertion and
+  the roll. Keys:
+  - W / S push or pull (stays on), Space stops.
+  - A / D turn one control step (11.5° at full speed) per press.
+  - 1 / 2 / 3 set the speed to 25 / 50 / 100 %.
+  - Enter saves the episode, Backspace discards it, Esc quits.
+
+  An episode also ends, and is saved, on their success rule or at `--max-steps`. On their rod: turn
+  to the listed entry roll first, then push. It runs at most at real time.
+- `--keys "d*10,w,_*150"` replays scripted key presses instead of the keyboard, for testing.
+
 **In our simulator.** `src/stroke_nav/organiser/` reproduces their action and observation spaces,
 reward, success rule, noise, device parameters, scenario and SAC settings on our kinematic simulator,
 with a fitted transform to their world frame (median 0.45 mm). Policies trained this way are a warm
