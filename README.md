@@ -20,6 +20,12 @@ in 30 carotid-stenosis variants.
 
 ## Results
 
+> **Wall crossings (2026-10-23).** The organiser's physics lets a pushed wire slip through a vessel wall
+> between its collision bodies. Re-checked with `stroke_nav.safety.wall`, every entry-roll "reached" below on
+> their physics crossed a wall on the way (cas-reference 3.6 mm, right ICA occlusion 3.1 mm, 70 % left lesion
+> 1.2 mm, femoral to left CCA 2.2 mm). With the wall safety layer these runs back off and stop instead; none
+> reaches its target without a crossing yet. See [docs/SAFETY.md](docs/SAFETY.md) §7.
+
 One episode per row on the organiser's physics unless a count is given; videos are 2× real time with
 their physics view on the left and the policy's fluoro input on the right (`results/` is not in git).
 

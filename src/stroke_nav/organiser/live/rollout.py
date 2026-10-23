@@ -24,6 +24,32 @@ CATH_INSERTION = 28  # catheter aux block starts at 25: velocity (3), insertion
 PAGE_ERRORS = (ConnectionError, OSError, RuntimeError, TimeoutError)
 
 
+def scenario_dir(name: str = "cas-reference", root=None):
+    """Folder of a scenario their pages load: ``root/name``, or their own ``HCMR-EV-RL/scenarios/name``."""
+    from pathlib import Path
+
+    from stroke_nav.organiser.live.lockstep import RL_ROOT
+
+    return Path(root) / name if root is not None else RL_ROOT / "scenarios" / name
+
+
+def wall_guard_for(name: str = "cas-reference", root=None):
+    """``WallGuard`` for a scenario, with the model's centerlines and frame for the shortcut test when they
+    are built: ``cas-reference`` is 0248 (fitted frame), ``<model>-<variant>[-...]`` a 0248 variant, else ``<model>``."""
+    from stroke_nav.data.anatomy import Anatomy
+    from stroke_nav.organiser.frame import frame_for
+    from stroke_nav.safety.wall import WallGuard
+
+    model, variant = ("0248_H_AOCERE_CAS", None) if name == "cas-reference" else (name.split("-")[0], None)
+    if name != "cas-reference" and "-" in name:
+        variant = name.split("-")[1]
+    try:
+        anat, frame = Anatomy.load(model, variant), frame_for(model)
+    except (FileNotFoundError, KeyError, ValueError):
+        anat = frame = None  # depth test only
+    return WallGuard.from_scenario(scenario_dir(name, root), anat=anat, frame=frame)
+
+
 def log(msg: str) -> None:
     print(f"[lockstep] {msg}", flush=True)
 
@@ -82,12 +108,17 @@ class RouteFollowerOnObservation:
 
 
 def run_lockstep_episode(env, policy, seed: int, sigma: float = 0.0, rng: np.random.Generator | None = None,
-                         record: bool = False) -> tuple[EpisodeTrace, dict | None]:
+                         record: bool = False, guard=None) -> tuple[EpisodeTrace, dict | None]:
     """One episode in the lockstep env. ``policy.act(obs)`` is the label; with ``sigma`` Gaussian noise is
     added to the executed guidewire action (DART), the label stays the policy's. ``record`` also returns
-    the arrays ``record_demos.py`` saves, so the episode can serve as a demonstration."""
+    the arrays ``record_demos.py`` saves, so the episode can serve as a demonstration. ``guard``
+    (``stroke_nav.safety.wall.WallGuard``) checks the true wire against the vessel wall after every step;
+    a policy with ``bind(env)`` (the ``WallSafeController`` safety layer) is given the env first."""
+    if hasattr(policy, "bind"):
+        policy.bind(env)
     obs, info = env.reset(seed=seed)
     policy.reset()
+    cross_steps, depth = 0, 0.0
     t0 = time.monotonic()
     tips, ins, acts, dists, rewards, images, states, labels = [], [], [], [], [], [], [], []
     peak, done = 0.0, False
@@ -100,6 +131,13 @@ def run_lockstep_episode(env, policy, seed: int, sigma: float = 0.0, rng: np.ran
             states.append(obs["state"])
             labels.append(label)
         obs, r, term, trunc, info = env.step(a)
+        if guard is not None and env.bridge.true["guidewire"]:
+            from stroke_nav.safety.wall import guidewire_bodies
+
+            s = env.bridge.true["guidewire"][-1]
+            check = guard.check(guidewire_bodies(s), float(s["ins"]) * 1000.0)
+            cross_steps += int(check.crossing)
+            depth = max(depth, check.depth_mm)
         true = env.bridge.latest_true()
         tips.append(np.asarray(true.tip_position, float))
         peak = max(peak, float(true.peak_force))
@@ -110,7 +148,8 @@ def run_lockstep_episode(env, policy, seed: int, sigma: float = 0.0, rng: np.ran
         done = term or trunc
     trace = EpisodeTrace(seed=seed, success=bool(info["success"]), tip_m=np.array(tips), insertion_mm=np.array(ins),
                          actions=np.array(acts), dist_mm=np.array(dists), peak_force_n=peak,
-                         reason=str(info.get("reset_reason", "")), wall_s=time.monotonic() - t0)
+                         reason=str(info.get("reset_reason", "")), wall_s=time.monotonic() - t0,
+                         wall_cross_steps=cross_steps, wall_depth_mm=depth, events=list(getattr(policy, "events", [])))
     raw = None
     if record:
         raw = {"images": np.stack(images), "states": np.stack(states), "labels": np.stack(labels),
@@ -128,6 +167,7 @@ def lockstep_pool(jobs: list[dict], make_policy, workers: int, max_steps: int, g
     from stroke_nav.organiser.live.lockstep import make_env
 
     lock, queue, results = threading.Lock(), list(jobs), []
+    guard_args = (env_kwargs.get("scenario_name", "cas-reference"), env_kwargs.get("scenario_root"))
 
     def fresh_env(worker: int, attempts: int = 3):
         """Their pages sometimes fail to come up (a stale Chrome, a reset socket): try a few times."""
@@ -141,6 +181,7 @@ def lockstep_pool(jobs: list[dict], make_policy, workers: int, max_steps: int, g
         return None
 
     def work(worker: int) -> None:
+        guard = wall_guard_for(*guard_args)  # one per worker: VTK locators are not shared across threads
         env = fresh_env(worker)
         if env is None:
             return  # the other workers take its jobs
@@ -157,7 +198,7 @@ def lockstep_pool(jobs: list[dict], make_policy, workers: int, max_steps: int, g
                     job = queue.pop(0)
                 try:
                     trace, raw = run_lockstep_episode(env, policy, job["seed"], job.get("sigma", 0.0),
-                                                      np.random.default_rng(job["seed"]), job.get("record", False))
+                                                      np.random.default_rng(job["seed"]), job.get("record", False), guard)
                 except PAGE_ERRORS as e:
                     # a headless Chrome can die mid-run (WinError 10054): restart this worker's pages, retry the episode
                     attempts = job.get("attempts", 0) + 1
@@ -178,7 +219,9 @@ def lockstep_pool(jobs: list[dict], make_policy, workers: int, max_steps: int, g
                     results.append((job, trace, raw))
                 log(f"{tag} seed {job['seed']} sigma {job.get('sigma', 0.0):g}: {'success' if trace.success else trace.reason} "
                     f"in {trace.steps} steps, min {trace.min_dist_mm:.1f} mm, final {trace.final_dist_mm:.1f} mm, "
-                    f"{trace.wall_s:.0f} s")
+                    f"{trace.wall_s:.0f} s"
+                    + (f", WALL CROSSED in {trace.wall_cross_steps} steps (up to {trace.wall_depth_mm:.1f} mm)" if trace.wall_cross_steps else "")
+                    + (f", safety events {[e['event'] for e in trace.events]}" if trace.events else ""))
         finally:
             if env is not None:
                 try:

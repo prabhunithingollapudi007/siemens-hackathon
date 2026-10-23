@@ -54,8 +54,13 @@ class RollTable:
         paths = []
         for f in str(file).split(","):
             doc = json.loads(Path(f.strip()).read_text(encoding="utf-8"))
-            paths += [RollPath(float(p["roll_deg"]), int(p["seed"]), np.asarray(p["tip_m"], dtype=float),
-                               np.asarray(p["ins_mm"], dtype=float)) for p in doc["paths"]]
+            for p in doc["paths"]:
+                # a path counts only until the wire first crossed the vessel wall (calibrate_rolls.py records it):
+                # what it reached after that, it reached through a wall
+                n = p.get("wall_cross_step")
+                n = len(p["tip_m"]) if n is None else max(int(n), 1)
+                paths.append(RollPath(float(p["roll_deg"]), int(p["seed"]), np.asarray(p["tip_m"][:n], dtype=float),
+                                      np.asarray(p["ins_mm"][:n], dtype=float)))
         if roll_range is not None:
             paths = [p for p in paths if roll_range[0] < p.roll_deg <= roll_range[1]]
         return cls(paths)

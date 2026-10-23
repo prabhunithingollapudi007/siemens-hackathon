@@ -111,7 +111,62 @@ Open points to check in their code before relying on this:
 - **Force units and gain.** The simulator UI has a force scale (seen at 80×) that multiplies every
   force published to ROS. Recorded forces are only usable if that gain is stored with the data.
 
-## 7. Limitations and next steps
+## 7. Wall crossings on the organiser's physics (2026-10-23)
+
+**What happened.** In the femoral-to-carotid video (`0028_H_ABAO_H`, long-reach robot) the guidewire
+entered the left common carotid *through the aortic arch wall* in the last 2 s, and the episode counted
+as a success. Peak force stayed at 1-2 mN, so neither the force readings nor their success rule noticed.
+
+**Cause.** Their page (`projectContainment` in `catheter_guidewire_ros2.html`) keeps only the wire's
+*bodies* inside the vessel, 7.5 mm apart (1.2 m / 160 bodies, the page's maximum), by pushing each body
+towards its *nearest* wall, capped at half a body spacing per pass. Where two lumens run a few mm apart
+(arch and left CCA, femoral and profunda), a pushed body slips across the wall, finds the other lumen's
+wall nearest and counts as inside; the wire between bodies is never checked. Pushing open-loop after the
+entry roll, as the A* + roll controller and its clones do, drives the wire into exactly these places.
+Slowing the push (3 mm/s) did not help; more collision passes (`collIters` 6) changed the path and missed.
+
+**How often.** Re-checked with the guard below, one episode each, A* + roll without the safety layer:
+
+| Case | Their success rule | Wall crossed | Deepest |
+|---|---|---|---|
+| 0028 femoral to left CCA@30 (long-reach) | reached | 6 steps at the end (arch into the CCA) | 2.2 mm |
+| 0248 cas-reference (behind the hand-over BC policy) | reached | 35 steps, in the arch at the left CCA origin while crossing to the right | 3.6 mm |
+| 0248 `10Left100Right` right ICA occlusion | reached | 19 steps | 3.1 mm |
+| 0248 `10Right70Left` left ICA lesion (deployment bundle) | reached | 2 steps | 1.2 mm |
+
+So every "success" of the entry-roll technique on their physics so far passed through a wall at some point.
+
+**Controls** (`src/stroke_nav/safety/wall.py`, tests `tests/test_wall.py`):
+
+- **`WallGuard`** checks what their page draws, a Catmull-Rom curve through the inserted bodies (every
+  0.5 mm), against the scenario's vessel surface by signed distance (5 ms per check). A stretch beyond the
+  wall counts as a crossing when it joins two lumens far apart along the vessel tree (*shortcut*: tree
+  distance > 2 x wire length + 10 mm, at any depth, since a thin wall allows only ~0.5 mm) or goes deeper
+  than 1.5 mm (*deep*). Same-vessel bows of the curve in a bend (up to ~1.1 mm in the femoral) are not crossings.
+- **Evaluation**: `run_lockstep_episode` checks the true wire every step; `assess` adds a rejecting
+  `wall` flag and counts only `safe_success` (reached without crossing). Case reports reject the runs above.
+- **Calibration**: `calibrate_rolls.py` records each path's first crossing; `RollTable` uses a path only
+  up to it, so a roll is never chosen because its path reached the target through a wall.
+- **Runtime safety layer** `WallSafeController` around any controller (on by default in `plan_case.py`,
+  `--no-wall-safety` to compare): on a crossing it stops pushing and retracts 15 mm past the crossing,
+  re-rolls (+20, -20, +40, -40 deg), creeps forward at 30 %, and aborts and holds after the last retry. It
+  reads the wire's noisy segment poses (their `/endovascular/guidewire/state/noisy`) and the pre-operative
+  vessel surface. It reacts one control step after the crossing appears (2-3 steps per incident).
+
+**Result with the layer** (one episode each, A* + roll at the table's roll): the wire no longer pushes
+on through a wall, but at the arch every retry crossed again, so each case ends safely without reaching its
+target instead of reaching it through the wall:
+
+| Case | Outcome with the safety layer |
+|---|---|
+| 0028 femoral to left CCA@30 | 3 retries at the arch crossed again; 600-step limit, 14.7 mm short |
+| 0248 cas-reference | crossing at 134 mm in the arch, 4 retries crossed again, abort at 109 mm |
+| 0248 `10Right70Left` left ICA lesion | crossing at 166 mm, 4 retries crossed again, abort at 128 mm |
+ Reaching these targets safely needs a different technique, e.g. advancing
+the catheter behind the wire through the arch for support, or selective cannulation with the shaped
+catheter tip, not only the entry roll.
+
+## 8. Limitations and next steps
 
 - The simulator is kinematic: R2 reacts to blocked pushes only. With the organiser's XPBD forces, R2 can
   use real tip force; thresholds then need calibration (and units checked, see above).

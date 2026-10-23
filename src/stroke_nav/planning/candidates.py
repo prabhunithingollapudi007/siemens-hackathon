@@ -48,6 +48,9 @@ class EpisodeTrace:
     peak_force_n: float = 0.0
     reason: str = ""
     wall_s: float = 0.0
+    wall_cross_steps: int = 0  # steps in which the true wire curve crossed the vessel wall (stroke_nav.safety.wall)
+    wall_depth_mm: float = 0.0  # deepest point of the wire beyond the wall over the episode
+    events: list = field(default_factory=list)  # safety-layer events (wall crossings, retries, abort)
 
     @property
     def steps(self) -> int:
@@ -68,14 +71,18 @@ class EpisodeTrace:
                 "tip_m": np.round(np.asarray(self.tip_m, float), 6).tolist(),
                 "insertion_mm": np.round(np.asarray(self.insertion_mm, float), 2).tolist(),
                 "actions": np.round(np.asarray(self.actions, float), 4).tolist(),
-                "dist_mm": np.round(np.asarray(self.dist_mm, float), 2).tolist()}
+                "dist_mm": np.round(np.asarray(self.dist_mm, float), 2).tolist(),
+                "wall_cross_steps": int(self.wall_cross_steps), "wall_depth_mm": round(float(self.wall_depth_mm), 2),
+                "events": self.events}
 
     @classmethod
     def from_dict(cls, d: dict) -> "EpisodeTrace":
         return cls(seed=int(d["seed"]), success=bool(d["success"]), tip_m=np.asarray(d["tip_m"], float).reshape(-1, 3),
                    insertion_mm=np.asarray(d["insertion_mm"], float), actions=np.asarray(d["actions"], float).reshape(-1, 4),
                    dist_mm=np.asarray(d["dist_mm"], float), peak_force_n=float(d.get("peak_force_n", 0.0)),
-                   reason=d.get("reason", ""), wall_s=float(d.get("wall_s", 0.0)))
+                   reason=d.get("reason", ""), wall_s=float(d.get("wall_s", 0.0)),
+                   wall_cross_steps=int(d.get("wall_cross_steps", 0)), wall_depth_mm=float(d.get("wall_depth_mm", 0.0)),
+                   events=list(d.get("events", [])))
 
 
 @dataclass
@@ -140,6 +147,8 @@ def assess_episode(trace: EpisodeTrace, anat, frame, route_points_mm: np.ndarray
     * ``force``: peak contact force above the monitor's limit
     * ``speed``: push commands above the lumen-radius speed envelope (steps)
     * ``travel``: insertion beyond the robot's guidewire travel
+    * ``wall``: the wire crossed the vessel wall (``trace.wall_cross_steps``, from ``stroke_nav.safety.wall``); an
+      episode that reached the goal this way does not count as a success (``safe_success``)
     """
     tip = frame.world_m_to_vmr_mm(np.asarray(trace.tip_m, float)) if len(trace.tip_m) else np.zeros((0, 3))
     nearest = np.array([anat.nearest_node(p) for p in tip], dtype=int)
@@ -218,7 +227,11 @@ def assess_episode(trace: EpisodeTrace, anat, frame, route_points_mm: np.ndarray
         flags.append("travel")
     if stall > 30.0:  # successful runs on their rod show 16-23 mm of slack in the arch; a buckled wire shows 100+
         flags.append("stall")
-    return {"seed": int(trace.seed), "success": bool(trace.success), "steps": trace.steps, "time_s": round(trace.steps * dt, 1),
+    if trace.wall_cross_steps:
+        flags.append("wall")
+    return {"seed": int(trace.seed), "success": bool(trace.success), "safe_success": bool(trace.success) and not trace.wall_cross_steps,
+            "steps": trace.steps, "time_s": round(trace.steps * dt, 1),
+            "wall_cross_steps": int(trace.wall_cross_steps), "wall_depth_mm": round(float(trace.wall_depth_mm), 2),
             "min_dist_mm": round(trace.min_dist_mm, 2), "final_dist_mm": round(trace.final_dist_mm, 2),
             "off_lumen_mm": round(off_lumen, 2), "off_route_mm": round(off_route_mm, 2), "off_route_steps": off_route_steps,
             "wrong_vessel_depth_mm": round(wrong_depth, 1),
@@ -229,22 +242,22 @@ def assess_episode(trace: EpisodeTrace, anat, frame, route_points_mm: np.ndarray
 def assess(cand: Candidate, anat, frame, route_points_mm: np.ndarray | None, route_nodes: set[int] | None,
            travel_mm: float, cfg: SafetyConfig = SafetyConfig(), dt: float = 0.2) -> dict:
     """``assess_episode`` for every episode plus the candidate's verdict: ``reject`` when no episode
-    reached the goal, ``review`` when any rule fired, else ``pass``."""
+    reached the goal without crossing the vessel wall, ``review`` when any rule fired, else ``pass``."""
     eps = [assess_episode(e, anat, frame, route_points_mm, route_nodes, travel_mm, cfg, dt) for e in cand.episodes]
     flags = sorted({f for e in eps for f in e["flags"]})
-    if not eps or not any(e["success"] for e in eps):
+    if not eps or not any(e["safe_success"] for e in eps):
         verdict = "reject"
     elif set(flags) - ADVISORY_FLAGS:
         verdict = "review"
     else:
         verdict = "pass"
-    ok = [e for e in eps if e["success"]]
+    ok = [e for e in eps if e["safe_success"]]
     return {"method": cand.method, "verdict": verdict, "flags": flags, "episodes": eps,
             "success": f"{len(ok)}/{len(eps)}",
             "time_to_goal_s": round(float(np.mean([e["time_s"] for e in ok])), 1) if ok else None,
             "median_final_dist_mm": round(float(np.median([e["final_dist_mm"] for e in eps])), 2) if eps else None,
             "worst": {k: max(e[k] for e in eps) for k in ("off_lumen_mm", "off_route_mm", "wrong_vessel_depth_mm", "overshoot_mm",
-                                                           "peak_force_n", "speed_violation_steps", "max_insertion_mm", "stall_mm")} if eps else {}}
+                                                           "peak_force_n", "speed_violation_steps", "max_insertion_mm", "stall_mm", "wall_depth_mm")} if eps else {}}
 
 
 # ---------------------------------------------------------------------- reports

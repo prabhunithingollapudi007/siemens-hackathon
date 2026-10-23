@@ -142,6 +142,8 @@ def main() -> None:
     ap.add_argument("--resume", action="store_true",
                     help="reuse candidates/<method>.json and demos/ already in the case folder instead of rerunning them")
     ap.add_argument("--no-plot", action="store_true")
+    ap.add_argument("--no-wall-safety", action="store_true",
+                    help="run their-physics methods without the wall safety layer (stroke_nav.safety.wall.WallSafeController)")
     args = ap.parse_args()
 
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
@@ -187,6 +189,15 @@ def main() -> None:
             log(f"wrote scenario {sc_name} for their physics")
         env_kwargs.update(scenario_name=sc_name, scenario_root=Path(DEFAULT_SCENARIO_ROOT))
     plan_s = time.monotonic() - t0
+
+    def safe(policy):
+        """The wall safety layer around a controller on their physics: back off and retry instead of crossing a wall."""
+        if args.no_wall_safety:
+            return policy
+        from stroke_nav.organiser.live.rollout import wall_guard_for
+        from stroke_nav.safety.wall import WallSafeController
+
+        return WallSafeController(policy, wall_guard_for(env_kwargs.get("scenario_name", "cas-reference"), env_kwargs.get("scenario_root")))
     goal_m = np.asarray(frame.vmr_mm_to_world_m(goal_vmr), float)
     travel = DEFAULT_SPEC.robot.guidewire_travel_mm
     route_mm = float(plan.length_mm)
@@ -276,7 +287,7 @@ def main() -> None:
         methods = [m for m in methods if m not in {"roll", "bc", "act", "sac"}]
     if "roll" in methods and not done("roll"):
         t0 = time.monotonic()
-        res = lockstep_pool([{"seed": s} for s in seeds], lambda w: EntryRollExpert(roll_deg=roll, slow_radius_mm=args.slow_radius),
+        res = lockstep_pool([{"seed": s} for s in seeds], lambda w: safe(EntryRollExpert(roll_deg=roll, slow_radius_mm=args.slow_radius)),
                             args.workers, args.max_steps, goal_m, tag="roll", **env_kwargs)
         c = Candidate("roll", "theirs-lockstep", f"entry-roll controller: roll to {roll:g} deg at the entry, then push",
                       plan_wall_s=time.monotonic() - t0, episodes=[r[1] for r in res],
@@ -298,7 +309,7 @@ def main() -> None:
             sigmas = [float(s) for s in args.sigmas.split(",")]
             jobs = [{"seed": 100 + i, "sigma": sigmas[i % len(sigmas)], "record": True} for i in range(args.bc_demos)]
             t0 = time.monotonic()
-            res = lockstep_pool(jobs, lambda w: EntryRollExpert(roll_deg=roll, slow_radius_mm=args.slow_radius), args.workers,
+            res = lockstep_pool(jobs, lambda w: safe(EntryRollExpert(roll_deg=roll, slow_radius_mm=args.slow_radius)), args.workers,
                                 args.max_steps, goal_m, deadline=t0 + 60.0 * args.bc_minutes, tag="demo", **env_kwargs)
             demo_s = time.monotonic() - t0
             for f in demos_dir.glob("ep_*.npz"):
@@ -328,7 +339,7 @@ def main() -> None:
                                   "--run-root", str(case_dir / "runs"), "--run-id", "bc", *(["--successful-only"] if n_ok >= 2 else [])], logfile)
     if "bc" in learned:
         t0 = time.monotonic()
-        res = lockstep_pool([{"seed": s} for s in seeds], lambda w: SACPolicy(str(bc_model)), args.workers, args.max_steps, goal_m, tag="bc", **env_kwargs)
+        res = lockstep_pool([{"seed": s} for s in seeds], lambda w: safe(SACPolicy(str(bc_model))), args.workers, args.max_steps, goal_m, tag="bc", **env_kwargs)
         finish(Candidate("bc", "theirs-lockstep", "behaviour cloning of the entry-roll demonstrations into the hand-over SAC model",
                          train_wall_s=demo_s + train_s, plan_wall_s=time.monotonic() - t0, episodes=[r[1] for r in res],
                          artifacts={"model": str(bc_model), "demos": str(demos_dir), "run_dir": str(bc_model.parent)},
@@ -349,7 +360,7 @@ def main() -> None:
                                                                       encoding="utf-8")
         train_s = time.monotonic() - t0
         t0 = time.monotonic()
-        res = lockstep_pool([{"seed": s} for s in seeds], lambda w: ChunkExecutor(*load_act(act_path)), args.workers, args.max_steps,
+        res = lockstep_pool([{"seed": s} for s in seeds], lambda w: safe(ChunkExecutor(*load_act(act_path))), args.workers, args.max_steps,
                             goal_m, tag="act", **env_kwargs)
         finish(Candidate("act", "theirs-lockstep", f"action chunking (ACT-style transformer, chunk {cfg.chunk}) on the same demonstrations",
                          train_wall_s=demo_s + train_s, plan_wall_s=time.monotonic() - t0, episodes=[r[1] for r in res],
@@ -364,7 +375,7 @@ def main() -> None:
                               "--run-root", str(case_dir / "runs"), "--run-id", "sac"], logfile)
         sac_model = case_dir / "runs" / "sac" / "final-model.zip"
         t0 = time.monotonic()
-        res = lockstep_pool([{"seed": s} for s in seeds], lambda w: SACPolicy(str(sac_model)), args.workers, args.max_steps, goal_m, tag="sac", **env_kwargs)
+        res = lockstep_pool([{"seed": s} for s in seeds], lambda w: safe(SACPolicy(str(sac_model))), args.workers, args.max_steps, goal_m, tag="sac", **env_kwargs)
         finish(Candidate("sac", "theirs-lockstep", "SAC fine-tuning of the BC model on this target, on their physics",
                          train_wall_s=demo_s + train_s, plan_wall_s=time.monotonic() - t0, episodes=[r[1] for r in res],
                          artifacts={"model": str(sac_model), "init": str(bc_model)},

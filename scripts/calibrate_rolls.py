@@ -37,6 +37,10 @@ ENV_KWARGS: dict = {}
 
 
 def sweep(worker: int, jobs: list[dict]) -> list[dict]:
+    from stroke_nav.organiser.live.rollout import wall_guard_for
+    from stroke_nav.safety.wall import guidewire_bodies
+
+    guard = wall_guard_for(ENV_KWARGS.get("scenario_name", "cas-reference"), ENV_KWARGS.get("scenario_root"))
     env = make_env(worker=worker, seed=worker, goals=[FAR_GOAL_M], max_steps=MAX_STEPS, **ENV_KWARGS)
     travel = DEFAULT_SPEC.robot.guidewire_travel_mm
     out = []
@@ -46,17 +50,22 @@ def sweep(worker: int, jobs: list[dict]) -> list[dict]:
             obs, _ = env.reset(seed=job["seed"])
             expert = EntryRollExpert(roll_deg=job["roll"], slow_radius_mm=1e-3, stop_radius_mm=-1.0)
             expert.reset()
-            tips, ins, stalled = [], [], 0
+            tips, ins, stalled, crossed = [], [], 0, None
             for _ in range(MAX_STEPS):
                 obs, _, term, trunc, _ = env.step(expert.act(obs))
+                s = env.bridge.true["guidewire"][-1]
+                if crossed is None and guard.check(guidewire_bodies(s), float(s["ins"]) * 1000.0).crossing:
+                    crossed = len(tips)  # the wire crossed the vessel wall at this step: the path is valid before it
                 tips.append(list(env.bridge.latest_true().tip_position))
                 ins.append(float(obs["state"][GW_INSERTION]) * 1000.0)
                 stalled = stalled + 1 if len(ins) > 1 and ins[-1] - ins[-2] < 0.2 and ins[-1] > travel - 15.0 else 0
                 if stalled >= 5 or term or trunc:
                     break
-            out.append({"roll_deg": job["roll"], "seed": job["seed"], "tip_m": tips, "ins_mm": [round(v, 2) for v in ins]})
-            print(json.dumps({"roll_deg": job["roll"], "seed": job["seed"], "steps": len(tips),
-                              "final_ins_mm": round(ins[-1], 1), "wall_s": round(time.monotonic() - t0, 1)}), flush=True)
+            out.append({"roll_deg": job["roll"], "seed": job["seed"], "tip_m": tips, "ins_mm": [round(v, 2) for v in ins],
+                        "wall_cross_step": crossed})
+            print(json.dumps({"roll_deg": job["roll"], "seed": job["seed"], "steps": len(tips), "final_ins_mm": round(ins[-1], 1),
+                              "wall_cross_at_ins_mm": None if crossed is None else round(ins[crossed], 1),
+                              "wall_s": round(time.monotonic() - t0, 1)}), flush=True)
     finally:
         env.close()
     return out
@@ -103,7 +112,9 @@ def main() -> None:
     anat, frame = Anatomy.load(args.model, args.variant), frame_for(args.model)
     for p in paths:
         tip = frame.world_m_to_vmr_mm(np.asarray(p["tip_m"][-1]))
-        print(f"  roll {p['roll_deg']:5.1f} seed {p['seed']}: ends in {anat.branch_of(anat.nearest_node(tip))}")
+        cross = p.get("wall_cross_step")
+        note = "" if cross is None else f"; CROSSED THE WALL at {p['ins_mm'][cross]:.0f} mm, in {anat.branch_of(anat.nearest_node(frame.world_m_to_vmr_mm(np.asarray(p['tip_m'][cross]))))}"
+        print(f"  roll {p['roll_deg']:5.1f} seed {p['seed']}: ends in {anat.branch_of(anat.nearest_node(tip))}{note}")
 
 
 if __name__ == "__main__":
