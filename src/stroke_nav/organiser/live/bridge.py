@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -43,12 +44,21 @@ class LiveBridge:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1, env=env)
         return self
 
-    def _request(self, req: dict) -> dict:
+    def _request(self, req: dict, timeout_s: float = 60.0) -> dict:
+        """Send one request and wait for its reply; a relay that stops answering (stack down, host
+        asleep) raises after ``timeout_s`` instead of blocking forever."""
         if self.proc is None or self.proc.poll() is not None:
             raise RuntimeError("relay is not running")
         self.proc.stdin.write(json.dumps(req) + "\n")
         self.proc.stdin.flush()
-        line = self.proc.stdout.readline()
+        box: list[str] = []
+        reader = threading.Thread(target=lambda: box.append(self.proc.stdout.readline()), daemon=True)
+        reader.start()
+        reader.join(timeout_s)
+        if reader.is_alive():
+            self.proc.kill()
+            raise TimeoutError(f"relay did not answer {req.get('op')!r} within {timeout_s:.0f} s")
+        line = box[0] if box else ""
         if not line:
             raise RuntimeError("relay exited")
         rep = json.loads(line)

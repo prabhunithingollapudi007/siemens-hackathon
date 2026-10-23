@@ -326,10 +326,24 @@ Roll sweep on their side (wire turned at the entry, then pushed 260 mm): 0-30 de
 subclavian and vertebral; 60-120 deg the right carotid side (90-120 deg into the right external
 carotid); 150 deg the right subclavian; 180-330 deg the left carotid or vertebral.
 
-**Reachability.** The scenario goal (right external carotid, 21 mm in) is 288 mm along the vessels
-from the entry. With 264.5 mm of guidewire travel the tip can get no closer than about 22 mm, so the
-cas-reference goal cannot be reached with the robot as configured. Every target in the right external
-carotid is out of reach (277 mm or more). Worth raising with the organisers.
+**Reachability.** The scenario goal (right external carotid, 21 mm in) is 288 mm along the
+centerlines from the entry, more than the 264.5 mm of guidewire travel, so it is out of reach in our
+kinematic simulator. On their rod physics it is reachable: the rod cuts corners (0.92 mm of route per
+mm inserted), and in the roll sweep the wire turned to 120° at the entry and pushed 260 mm came within
+2.8 mm of the goal and ended 4.0 mm from it (90°: 3.5 mm). Their SAC pool's 95 training successes agree.
+
+**Entry roll decides the branch.** Pushing after a single roll at the entry already passes within
+5 mm of right carotid @10-80 and right external carotid @10-20 (60-120°), left carotid @10-40
+(180-330°), left subclavian @10-50 and left vertebral @10-30 (0-30°, 270°). Re-steering at each
+bifurcation from the measured tip direction (the A* follower below) does not work there.
+
+**Real-time speed on this laptop (2026-10-23).** With their whole stack running, the physics solve
+takes about 65 ms per frame (11 frames/s, 0.18× real time) and states and images arrive at 3.3 Hz.
+Their env's readiness check needs at least 4.5 Hz of images, so `OpenNG3Env` refuses to start. Their
+ROS nodes each spin near one core (the joint-state follower, both command nodes, the reset
+coordinator), driven by the ~2 kHz `/ng3/joint_states`. With the containers paused the solve takes
+28 ms (28 frames/s). `RLRenderer` (`organiser.live.renderer`) starts their RL renderer the way
+`headless-renderer` does: asset server, then the physics page and noisy viewer in two headless Chromes.
 
 ## 13. A* on both simulators
 
