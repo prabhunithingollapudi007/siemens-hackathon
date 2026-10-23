@@ -198,7 +198,61 @@ behaviour-cloned from it reaches it too: 8 of 8 on unseen seeds, in 30 s. See se
 .venv\Scripts\python.exe scripts/record_demos.py --episodes 60 --sigmas 0,0.2,0.4 --workers 4 --max-steps 300
 .venv\Scripts\python.exe scripts/train_bc.py --demos runs/demos/cas-reference --device cuda
 .venv\Scripts\python.exe scripts/eval_lockstep.py --model runs/<run_id>/final-model.zip --episodes 8 --workers 4
+.venv\Scripts\python.exe scripts/demo_lockstep.py --record results/demo_bc_policy.mp4   # watch it on their pages and record a video
 ```
+
+### Deploy on the organiser's machine
+
+Their own evaluation (`./sys startup --mode showcase`) runs the policy on their full stack: robot
+simulator, ROS 2, physics page and noisy viewer, in real time. It needs Linux with Docker, and a
+machine fast enough for their 4.5 Hz image check (this laptop manages 3.3 Hz, so it has not been run
+here).
+
+1. **Package** the run (already done for `stroke-nav-bc-v1`):
+
+   ```bash
+   .venv\Scripts\python.exe scripts/check_handover.py --run-dir runs/stroke-nav-bc-v1
+   .venv\Scripts\python.exe scripts/export_handover.py --run-dir runs/stroke-nav-bc-v1 --plan-target right_carotid_external@21
+   ```
+
+   `handover/stroke-nav-bc-v1.zip` contains `runs/stroke-nav-bc-v1/` with `final-model.zip`,
+   `resolved-config.json`, `device-parameters.json` (hash `38b1ea53…`, as theirs) and `scenario.json`
+   (their cas-reference manifest). Their showcase checks all four.
+
+2. **Copy** the run into their RL repository (`$HCMR_RL_REPO_PATH`, by default `../HCMR-EV-RL` next to
+   `HCMR-EV-OpenNG3`, or `~/HCMR-EV-RL`):
+
+   ```bash
+   unzip stroke-nav-bc-v1.zip
+   cp -r stroke-nav-bc-v1/runs/stroke-nav-bc-v1 ~/HCMR-EV-RL/runs/
+   ```
+
+3. **Run** their evaluation from `HCMR-EV-OpenNG3` (`--visible` shows the physics page):
+
+   ```bash
+   ./sys startup --mode showcase --scenario cas-reference --run-id stroke-nav-bc-v1 --model final-model.zip --episodes 10 --visible
+   ```
+
+   It runs `openng3-rl-evaluate` in the `hcmr-online-rl` container with deterministic actions and
+   records every rollout. Expect the wire to roll to about 120° and push into the right external
+   carotid in about 30 s, as in `results/demo_bc_policy.mp4`.
+
+4. **Read the results**:
+   - per episode: `HCMR-EV-RL/runs/stroke-nav-bc-v1/evaluations/<id>/episodes.json` (`success`, `outcome`, `return`, `unsafe`)
+   - their summary: `success_rate`, `aborted_episodes`, `mean_return`
+   - recorded rollouts in their dataset viewer at http://localhost:8090
+   - logs: `docker logs hcmr-online-rl`
+   - when finished, `./sys shutdown` (it also finalises the rollout dataset)
+
+What to watch for:
+
+- **`aborted` episodes:** their env dropped stale image and state packets, so the machine is too slow
+  for real time. This says nothing about the policy.
+- **A device-parameter error at startup:** their simulator settings no longer match the run's
+  `device-parameters.json`.
+- **Failures without aborts:** a real gap between lockstep and their wall-clock stack. In lockstep,
+  the robot's 50 ms delay and the noise node are emulated from their sources, not run in their
+  containers.
 
 [docs/HANDOVER.md](docs/HANDOVER.md) lists what is identical, what is approximate and what is missing,
 and gives the exact commands to run on their side. The organiser's own 210k-step checkpoint loads in
