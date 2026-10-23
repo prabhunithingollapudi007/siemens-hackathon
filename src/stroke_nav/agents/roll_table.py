@@ -7,7 +7,10 @@ tip path (world metres) for several noise seeds. Here:
 
 * a point is reachable with a roll when the tip path of every seed of that roll passes within
   ``reach_mm`` of it (so the outcome does not hinge on one lucky run);
-* ``RollTable.reach`` picks the roll whose worst seed passes closest;
+* ``RollTable.reach`` picks the roll whose worst seed passes closest, or (``prefer_small_within_mm``)
+  the smallest |roll| among those within that distance. With signed rolls (-180, 180] the policy can
+  then read its progress towards the roll from the observed sin/cos of the shaft rotation, which
+  cannot tell 345 deg from -15 deg;
 * ``RollTable.candidate_goals`` samples reachable goal points along the recorded paths, which is
   where generic targets for demonstrations and evaluation come from.
 """
@@ -46,19 +49,31 @@ class RollTable:
         self.rolls = sorted({p.roll_deg for p in paths})
 
     @classmethod
-    def load(cls, file: str | Path) -> "RollTable":
-        doc = json.loads(Path(file).read_text(encoding="utf-8"))
-        return cls([RollPath(float(p["roll_deg"]), int(p["seed"]), np.asarray(p["tip_m"], dtype=float),
-                             np.asarray(p["ins_mm"], dtype=float)) for p in doc["paths"]])
+    def load(cls, file: str | Path, roll_range: tuple[float, float] | None = None) -> "RollTable":
+        """``file``: a sweep file or several, comma-separated; ``roll_range`` ``(lo, hi]``: keep only those rolls."""
+        paths = []
+        for f in str(file).split(","):
+            doc = json.loads(Path(f.strip()).read_text(encoding="utf-8"))
+            paths += [RollPath(float(p["roll_deg"]), int(p["seed"]), np.asarray(p["tip_m"], dtype=float),
+                               np.asarray(p["ins_mm"], dtype=float)) for p in doc["paths"]]
+        if roll_range is not None:
+            paths = [p for p in paths if roll_range[0] < p.roll_deg <= roll_range[1]]
+        return cls(paths)
 
     def worst_mm(self, roll_deg: float, goal_m) -> float:
         """Distance (mm) by which the worst seed of ``roll_deg`` misses ``goal_m``."""
         goal = np.asarray(goal_m, dtype=float)
         return max(path_distance_m(p.tip_m, goal) for p in self.paths if p.roll_deg == roll_deg) * 1000.0
 
-    def reach(self, goal_m) -> tuple[float, float]:
-        """(roll in degrees, worst-seed miss in mm) of the roll that reaches ``goal_m`` best."""
+    def reach(self, goal_m, prefer_small_within_mm: float | None = None) -> tuple[float, float]:
+        """(roll in degrees, worst-seed miss in mm) of the roll that reaches ``goal_m`` best, or of the
+        smallest |roll| that misses it by at most ``prefer_small_within_mm``."""
         misses = [(self.worst_mm(r, goal_m), r) for r in self.rolls]
+        if prefer_small_within_mm is not None:
+            ok = [(abs(r), m, r) for m, r in misses if m <= prefer_small_within_mm]
+            if ok:
+                _, miss, roll = min(ok)
+                return roll, miss
         miss, roll = min(misses)
         return roll, miss
 
@@ -66,9 +81,11 @@ class RollTable:
         roll, miss = self.reach(goal_m)
         return roll if miss <= reach_mm else None
 
-    def candidate_goals(self, spacing_mm: float = 5.0, reach_mm: float = 2.5, min_ins_mm: float = 40.0) -> list[dict]:
+    def candidate_goals(self, spacing_mm: float = 5.0, reach_mm: float = 2.5, min_ins_mm: float = 40.0,
+                        prefer_small_roll: bool = False) -> list[dict]:
         """Reachable goal points about ``spacing_mm`` apart along the recorded paths (first seed of
-        each roll), at least ``min_ins_mm`` of insertion from the entry; each with its best roll."""
+        each roll), at least ``min_ins_mm`` of insertion from the entry; each with its best roll (or,
+        ``prefer_small_roll``, the smallest |roll| that reaches it)."""
         goals: list[dict] = []
         kept = np.empty((0, 3))
         for roll in self.rolls:
@@ -82,7 +99,7 @@ class RollTable:
                 point = p.tip_m[min(k, len(p.tip_m) - 1)]
                 if len(kept) and np.min(np.linalg.norm(kept - point, axis=1)) * 1000.0 < spacing_mm:
                     continue  # paths overlap in the aorta and the shared trunks
-                best_roll, miss = self.reach(point)
+                best_roll, miss = self.reach(point, reach_mm if prefer_small_roll else None)
                 if miss > reach_mm:
                     continue
                 goals.append({"goal_m": point.tolist(), "roll_deg": best_roll, "miss_mm": round(miss, 2),

@@ -60,3 +60,15 @@ def test_goal_set_next_then_uniform(tmp_path):
     assert len(load_goal_set(f, "train,test")) == 2
     with pytest.raises(ValueError):
         load_goal_set(f, "cas")
+
+
+def test_signed_rolls_prefer_the_smallest_turn(tmp_path):
+    exact, near = _path(345.0, 1, (0, 0, 1)), _path(-15.0, 1, (0, 0, 1), offset=0.001)
+    t = RollTable([exact, near])
+    assert t.reach([0.0, 0.0, 0.1])[0] == 345.0  # closest
+    roll, miss = t.reach([0.0, 0.0, 0.1], prefer_small_within_mm=2.5)
+    assert roll == -15.0 and miss == pytest.approx(1.0, abs=1e-6)
+    f = tmp_path / "sweep.json"
+    f.write_text(json.dumps({"paths": [{"roll_deg": p.roll_deg, "seed": p.seed, "tip_m": p.tip_m.tolist(),
+                                        "ins_mm": p.ins_mm.tolist()} for p in (exact, near)]}))
+    assert RollTable.load(f"{f},{f}", roll_range=(-180.0, 180.0)).rolls == [-15.0]

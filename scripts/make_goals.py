@@ -8,6 +8,11 @@ cas-reference goal is added on its own (split ``cas``).
 
     python scripts/make_goals.py                                     # results/lockstep/goals.json
     python scripts/make_goals.py --spacing 4 --per-branch 30 --test-fraction 0.25
+    python scripts/make_goals.py --signed --table results/lockstep/roll_sweep.json,results/lockstep/roll_sweep_neg.json \
+        --spacing 3 --per-branch 60 --out results/lockstep/goals_signed.json
+
+``--signed`` keeps rolls in (-180, 180] and gives each goal the smallest |roll| that reaches it, so a
+policy can see from the observed sin/cos of the shaft rotation how far it still has to turn.
 """
 
 from __future__ import annotations
@@ -31,7 +36,9 @@ from stroke_nav.organiser.spec import CAS_REFERENCE_GOALS_CM  # noqa: E402
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--table", default=str(ROOT / "results" / "lockstep" / "roll_sweep.json"))
+    ap.add_argument("--table", default=str(ROOT / "results" / "lockstep" / "roll_sweep.json"),
+                    help="sweep file(s) from calibrate_rolls.py, comma-separated")
+    ap.add_argument("--signed", action="store_true", help="rolls in (-180, 180], smallest |roll| that reaches")
     ap.add_argument("--spacing", type=float, default=5.0, help="mm between goals along a path")
     ap.add_argument("--reach", type=float, default=3.0, help="mm every seed's path must pass within")
     ap.add_argument("--min-ins", type=float, default=40.0, help="mm of insertion before the first goal")
@@ -41,10 +48,10 @@ def main() -> None:
     ap.add_argument("--out", default=str(ROOT / "results" / "lockstep" / "goals.json"))
     args = ap.parse_args()
 
-    table = RollTable.load(args.table)
+    table = RollTable.load(args.table, roll_range=(-180.0, 180.0) if args.signed else None)
     anat, frame = Anatomy.load("0248_H_AOCERE_CAS"), default_frame()
     rng = np.random.default_rng(args.seed)
-    goals = table.candidate_goals(args.spacing, args.reach, args.min_ins)
+    goals = table.candidate_goals(args.spacing, args.reach, args.min_ins, prefer_small_roll=args.signed)
     by_branch = collections.defaultdict(list)
     for g in goals:
         g["branch"] = anat.branch_of(anat.nearest_node(frame.world_m_to_vmr_mm(np.asarray(g["goal_m"]))))
@@ -58,14 +65,15 @@ def main() -> None:
     for i, g in enumerate(chosen):
         g["split"] = "test" if i in test else "train"
     cas = np.asarray(CAS_REFERENCE_GOALS_CM[0]) / 100.0  # mesh cm -> world m (meters_per_unit 0.01)
-    roll, miss = table.reach(cas)
+    roll, miss = table.reach(cas, 5.0 if args.signed else None)
     chosen.append({"goal_m": cas.tolist(), "roll_deg": roll, "miss_mm": round(miss, 2), "ins_mm": None,
                    "branch": anat.branch_of(anat.nearest_node(frame.world_m_to_vmr_mm(cas))), "split": "cas"})
     for i, g in enumerate(chosen):
         g["id"] = i
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({"table": str(args.table), "reach_mm": args.reach, "goals": chosen}, indent=1), encoding="utf-8")
+    out.write_text(json.dumps({"table": str(args.table), "reach_mm": args.reach, "signed": args.signed,
+                               "goals": chosen}, indent=1), encoding="utf-8")
 
     print(f"{len(goals)} reachable candidates -> {len(chosen)} goals ({len(test)} test) -> {out}")
     print(f"{'branch':26s} {'train':>5} {'test':>5}  rolls")

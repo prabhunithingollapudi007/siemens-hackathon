@@ -77,3 +77,34 @@ class EntryRollExpert:
             return a
         a[0] = np.clip(dist_mm / self.slow_radius_mm, self.min_push, 1.0)
         return a
+
+
+@dataclass
+class RecoveringExpert(EntryRollExpert):
+    """``EntryRollExpert`` that also recovers, so it can label any state a learner reaches (DAgger).
+
+    When the guidewire is in beyond ``retract_from_mm`` with its roll more than ``recover_deg`` off
+    the entry roll, it pulls back to ``retract_to_mm`` and then rolls and pushes again. On their rod
+    the branch is chosen at the entry, so turning deep inside a vessel does not fix a wrong roll; this
+    is what an operator does instead.
+    """
+
+    recover_deg: float = 25.0
+    retract_from_mm: float = 15.0
+    retract_to_mm: float = 3.0
+
+    def act(self, obs: dict) -> np.ndarray:
+        if not hasattr(self, "phase"):
+            self.reset()
+        state = np.asarray(obs["state"], dtype=np.float64)
+        ins_mm = float(state[GW_INSERTION]) * 1000.0
+        err = math.radians(self.roll_deg) - self._rotation(state)  # same obs again in super().act: no change
+        retract = np.array([-1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        if self.phase == "retract":
+            if ins_mm > self.retract_to_mm:
+                return retract
+            self.phase, self.best_mm = "roll", math.inf
+        elif ins_mm > self.retract_from_mm and abs(err) > math.radians(self.recover_deg):
+            self.phase = "retract"
+            return retract
+        return super().act(obs)
