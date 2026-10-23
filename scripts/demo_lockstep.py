@@ -102,8 +102,15 @@ def main() -> None:
 
         model_name = "0248_H_AOCERE_CAS"
         anat, frame = Anatomy.load(model_name, args.variant), default_frame()
-        node = anat.resolve(args.target or "right_carotid_external@21")
-        goal_vmr = anat.nodes[node]
+        scenario_goal = args.target in (None, "scenario")
+        if scenario_goal:  # the organiser's own goal (cas-reference goals.txt), exactly as their env samples it
+            from stroke_nav.organiser.spec import CAS_REFERENCE_GOALS_CM
+
+            goal_vmr = frame.obj_cm_to_vmr_mm(np.asarray(CAS_REFERENCE_GOALS_CM[0]))
+            node = anat.nearest_node(goal_vmr)
+        else:
+            node = anat.resolve(args.target)
+            goal_vmr = anat.nodes[node]
         plan = PathPlanner(anat, GUIDEWIRE, PlannerWeights.profile("balanced")).plan(anat.default_start(), node)
         route_line = f"A* route: {' > '.join(plan.branches())} ({plan.length_mm:.0f} mm, ~{plan.costs['est_time_s']:.0f} s)" if plan.feasible else "A*: no route"
         roll = args.roll
@@ -112,7 +119,7 @@ def main() -> None:
             roll, miss = RollTable.load(",".join(map(str, files))).reach(frame.vmr_mm_to_world_m(goal_vmr), robust_within_mm=5.0)
             print(f"entry roll {roll:g} deg from the calibrated table (recorded paths miss the target by {miss:.1f} mm)")
         goal = {"id": 0, "split": args.variant or "base", "branch": anat.branch_of(node), "roll_deg": roll,
-                "goal_m": frame.vmr_mm_to_world_m(goal_vmr).tolist()}
+                "goal_m": frame.vmr_mm_to_world_m(goal_vmr).tolist(), "scenario_goal": scenario_goal}
         if args.variant:
             name = scenario_name(model_name, args.variant)
             if not (Path(DEFAULT_SCENARIO_ROOT) / name / "scenario.json").is_file():
@@ -134,13 +141,16 @@ def main() -> None:
         from stable_baselines3 import SAC
 
         model, name = SAC.load(args.model, device="cpu"), f"BC policy {Path(args.model).parent.name}"
-    env = make_env(worker=0, seed=args.seed, visible=not args.headless, goals=[goal["goal_m"]] if goal else None,
+    their_goal = bool(goal and goal.get("scenario_goal"))
+    env = make_env(worker=0, seed=args.seed, visible=not args.headless, goals=None if (goal is None or their_goal) else [goal["goal_m"]],
                    max_steps=args.max_steps, **env_kwargs)
     bridge = env.bridge
     frames = []
     try:
-        if goal:
+        if goal and not their_goal:
             show_goal(bridge.physics, goal["goal_m"])
+        elif goal:
+            print(f"goal: the organiser's cas-reference goal ({goal['branch']}), entry roll {goal['roll_deg']:g} deg")
             print(f"goal {goal['id']} ({goal['split']}): {goal['branch']}, entry roll {goal['roll_deg']:g} deg")
         obs, info = env.reset(seed=args.seed)
         if args.expert:
@@ -156,7 +166,7 @@ def main() -> None:
             if done:
                 banner = (f"GOAL REACHED in {step / 5:.1f} s  ({dist:.1f} mm, within 5 mm for 3 steps)" if info["success"]
                           else f"episode ended: {info.get('reset_reason')}  ({dist:.1f} mm)")
-            target = (f"{args.variant or '0248'}: {args.target} ({goal['branch']}), entry roll {goal['roll_deg']:g} deg" if args.target or args.variant
+            target = (f"{args.variant or '0248'}: {'organiser cas-reference goal' if their_goal else args.target} ({goal['branch']}), entry roll {goal['roll_deg']:g} deg" if args.target or args.variant
                       else f"goal {goal['id']} ({goal['split']}): {goal['branch']}" if goal else "goal: cas-reference")
             lines = [name, target, *([route_line] if route_line else []), f"step {step:3d}   simulated {step / 5:5.1f} s", f"distance to goal {dist:6.1f} mm",
                      f"guidewire  in {ins:6.1f} mm  roll {rot:6.1f} deg",

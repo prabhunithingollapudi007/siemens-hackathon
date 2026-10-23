@@ -25,6 +25,8 @@ their physics view on the left and the policy's fluoro input on the right (`resu
 
 | Demo | Runs on | Result |
 |---|---|---|
+| A\* route + calibrated entry roll on the organiser's own cas-reference goal | organiser's physics | **reached in 28.8 s**, 4.0 mm |
+| Behaviour-cloned policy on that goal (24 demonstrations of the route, 10 min of training) | organiser's physics | **reached in 29.4 s**, 4.1 mm; passes the hand-over check |
 | A\* route + calibrated entry roll, 70 % left ICA lesion (`10Right70Left`, `left_carotid@140`) | organiser's physics | **reached in 27 s**, 1.8 mm from the lesion, peak force 5 mN |
 | Same, right ICA lesion (`right_carotid@118`) | organiser's physics | 9 mm short: the 301 mm route exceeds the 264.5 mm guidewire travel |
 | Behaviour-cloned policy from 12 of those demonstrations (3.6 min of training) | organiser's physics | **reached in 26.4 s**, 1.9 mm; passes the hand-over check |
@@ -44,6 +46,8 @@ python scripts/demo_lockstep.py --variant 10Right70Left --target right_carotid@1
 python scripts/plan_case.py --variant 10Right70Left --target left_carotid@140 --case-id v70-left --methods astar,roll,bc --bc-demos 12 --sigmas 0,0.2 --eval-episodes 1   # 12 demos + behaviour cloning, ~6 min
 python scripts/demo_lockstep.py --model results/cases/v70-left/runs/bc/final-model.zip --variant 10Right70Left --target left_carotid@140 --record results/cases/v70-left/bc_success.mp4   # video: the clone
 python scripts/plan_case.py --target scenario --case-id cas-reference          # every method on their cas-reference goal, ~20 min
+python scripts/demo_lockstep.py --target scenario --expert --slow-radius 8 --record results/cases/cas-reference/astar_roll.mp4   # video: A* route + entry roll on their goal
+python scripts/demo_lockstep.py --target scenario --model results/cases/cas-reference/runs/bc/final-model.zip --record results/cases/cas-reference/bc.mp4   # video: the clone on their goal
 ```
 
 Details and the full tables: [docs/PLANNER.md](docs/PLANNER.md) and [docs/CASE_PLANNING.md](docs/CASE_PLANNING.md).
