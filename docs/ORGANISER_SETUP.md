@@ -361,7 +361,7 @@ to the right subclavian passed two of three bifurcations before the 600-step lim
 second browser tab taking the command channel. Open-loop replay of our planned trajectory does not
 work there: their rod picks different branches than our tip model.
 
-## 14. Lockstep physics (2026-10-23)
+## 14. Lockstep physics, scripted expert and behaviour cloning (2026-10-23)
 
 **Lockstep env** (`stroke_nav.organiser.live.lockstep.make_env`). Their physics page and noisy viewer
 run in headless Chrome with `lockstep_page.js` injected: we run their animation frames ourselves
@@ -373,3 +373,35 @@ noise node (noise, 7 % tip dropout, 50-150 ms latency) are emulated. One control
 first so the pages get the CPU. Each worker gets its own page and asset-server ports
 (8100 + 10·worker, 8102 + 10·worker): their asset server keeps a single authoritative page session,
 and workers sharing one got each other's mesh-to-world transform, i.e. wrong goals.
+
+**Scripted expert** (`stroke_nav.agents.entry_roll.EntryRollExpert`). It uses only the organiser
+observation: it turns the guidewire to 120° at the entry, pushes it at full speed, slows inside 25 mm
+of the goal and holds inside 2.5 mm. The catheter stays at home. In lockstep it reaches the
+cas-reference goal (right external carotid) in 151-165 steps (median 153, about 31 s), every time.
+
+**Behaviour cloning.**
+
+```bash
+.venv\Scripts\python.exe scripts/record_demos.py --episodes 60 --rolls 120 --sigmas 0,0.2,0.4 --workers 4 --max-steps 300
+.venv\Scripts\python.exe scripts/train_bc.py --demos runs/demos/cas-reference --epochs 40 --device cuda --run-id stroke-nav-bc-v1
+.venv\Scripts\python.exe scripts/eval_lockstep.py --model runs/stroke-nav-bc-v1/final-model.zip --episodes 8 --workers 4
+```
+
+- `record_demos.py` adds DART noise to the executed action (σ 0, 0.2, 0.4 on the guidewire) but keeps
+  the expert's action as the label. 60 of 60 demos succeeded (18.6 min, 10,099 samples, 5.4 MB).
+- `train_bc.py` builds the ordinary SB3 SAC model with `FluoroStateExtractor` and regresses the
+  actor's deterministic action onto the labels. It also warm-starts both critics on the Monte-Carlo
+  return, so SAC fine-tuning can start from it. 40 epochs take 30 s on the RTX 3060.
+- `eval_lockstep.py` runs a model deterministically, as their `evaluation.py` does.
+
+| Policy (lockstep, their physics) | Episodes | Success | Time to goal | Final distance | Peak force |
+|---|---|---|---|---|---|
+| `EntryRollExpert` (σ = 0 demos) | 20 | 100 % | 30.6 s | 4.0 mm | < 0.01 N |
+| BC policy `stroke-nav-bc-v1` (unseen seeds) | 8 | 100 % | 30.4 s | 4.0 mm | 0.009 N |
+
+`check_handover.py` passes on the run folder. In our kinematic simulator the same policy fails: the
+goal is beyond our guidewire travel (§12), and our simulator picks a different branch at the arch.
+
+**Limits.** One goal (their scenario has one). The robot and noise are emulated from their sources,
+not their containers. The policy has not yet been run on their wall-clock stack, which is too slow on
+this laptop (§12).

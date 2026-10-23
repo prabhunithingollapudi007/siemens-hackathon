@@ -188,6 +188,18 @@ dropped into their `runs/` folder:
 The organiser's own stack also runs on this laptop: `powershell -ExecutionPolicy Bypass -File tools\organiser_stack.ps1 start`.
 See [docs/ORGANISER_SETUP.md](docs/ORGANISER_SETUP.md), section 11.
 
+**Policy trained on their physics.** `stroke_nav.organiser.live.lockstep` runs their physics page and
+their env faster than real time, without Docker or ROS. A scripted expert (`EntryRollExpert`: roll
+the wire to 120° at the entry, then push) reaches their goal in every episode. A SAC policy
+behaviour-cloned from it reaches it too: 8 of 8 on unseen seeds, in 30 s. See section 14 of
+[docs/ORGANISER_SETUP.md](docs/ORGANISER_SETUP.md).
+
+```bash
+.venv\Scripts\python.exe scripts/record_demos.py --episodes 60 --sigmas 0,0.2,0.4 --workers 4 --max-steps 300
+.venv\Scripts\python.exe scripts/train_bc.py --demos runs/demos/cas-reference --device cuda
+.venv\Scripts\python.exe scripts/eval_lockstep.py --model runs/<run_id>/final-model.zip --episodes 8 --workers 4
+```
+
 [docs/HANDOVER.md](docs/HANDOVER.md) lists what is identical, what is approximate and what is missing,
 and gives the exact commands to run on their side. The organiser's own 210k-step checkpoint loads in
 our compatible environment with identical spaces.

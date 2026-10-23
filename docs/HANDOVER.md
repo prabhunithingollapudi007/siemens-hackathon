@@ -26,7 +26,14 @@ compatibility layer is in `src/stroke_nav/organiser/`.
 | Fluoro image | **approximate** | same size, grey levels and roughly the same camera, but no grid or lighting; expect a visual domain gap |
 
 Because of the last three rows, a policy trained here is a **warm start**. Plan to fine-tune it in their
-simulator. Their `./sys startup --mode rl` continues training from a checkpoint if their training code
+simulator.
+
+**Policy trained on their physics instead.** `stroke_nav.organiser.live.lockstep` runs their own
+physics page, observation, reward and success rule faster than real time. A behaviour-cloned SAC
+policy trained there (`runs/stroke-nav-bc-v1`, `scripts/record_demos.py` + `scripts/train_bc.py`)
+reaches the cas-reference goal in 8 of 8 lockstep episodes. Its physics, images and forces come from
+their own pages (only the robot and noise node are emulated), so it is the run to hand over first. Steps 2-4 below apply to it unchanged. See
+[ORGANISER_SETUP.md](ORGANISER_SETUP.md) §14. Their `./sys startup --mode rl` continues training from a checkpoint if their training code
 is pointed at it. That isn't automated by them; it's a small change on their side.
 
 ## Steps
