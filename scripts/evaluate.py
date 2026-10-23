@@ -21,7 +21,7 @@ import numpy as np
 
 from stroke_nav.agents.scripted import RandomAgent, ScriptedOracle, run_episode
 from stroke_nav.env.vessel_env import EnvConfig, VesselNavEnv
-from stroke_nav.eval.start_metrics import episode_start_metrics, markdown_table, summarize
+from stroke_nav.eval.start_metrics import episode_start_metrics, export_metrics_csv, markdown_table, summarize
 
 
 class ForwardAgent:
@@ -97,9 +97,10 @@ def main() -> None:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         w.writeheader()
         w.writerows(rows)
+    export_metrics_csv(out_dir / "metrics.csv", rows)
     print()
     print(md)
-    print(f"[eval] wrote {out_dir / 'start_summary.md'} and {out_dir / 'episodes.csv'}")
+    print(f"[eval] wrote {out_dir / 'start_summary.md'}, {out_dir / 'episodes.csv'}, and {out_dir / 'metrics.csv'}")
 
 
 if __name__ == "__main__":

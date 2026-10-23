@@ -110,6 +110,10 @@ class VesselNavEnv(gym.Env):
             "last_dir": np.zeros(2),
             "wrong_branch_events": 0,
             "tip_speeds": [],
+            "tip_accelerations": [],
+            "lumen_clearance_mm": [],
+            "branch_decisions": 0,
+            "correct_branch_decisions": 0,
             "rewards": {"step": 0.0, "progress": 0.0, "success": 0.0, "wrong_branch": 0.0},
             "trajectory": [self._points()[: 2 if self.cfg.include_catheter_obs else 1, 0].copy()],
         }
@@ -133,11 +137,19 @@ class VesselNavEnv(gym.Env):
         wrong = 0
         for (u, chosen, _leader) in self.sim.decisions[len(ep.setdefault("_seen_decisions", [])):]:
             ep["_seen_decisions"].append((u, chosen))
+            ep["branch_decisions"] += 1
             if u in self.route_set and chosen not in self.route_set:
                 wrong += 1
+            else:
+                ep["correct_branch_decisions"] += 1
         ep["wrong_branch_events"] += wrong
         tip = self.sim.position_at(self.sim.L[self.success_dev])
-        ep["tip_speeds"].append(float(np.linalg.norm(tip - prev_tip)) / self.cfg.sim.dt)
+        speed = float(np.linalg.norm(tip - prev_tip)) / self.cfg.sim.dt
+        ep["tip_speeds"].append(speed)
+        if len(ep["tip_speeds"]) > 1:
+            ep["tip_accelerations"].append(abs(speed - ep["tip_speeds"][-2]) / self.cfg.sim.dt)
+        node = self.sim.node_at(self.sim.L[self.success_dev])
+        ep["lumen_clearance_mm"].append(float(self.anat.radius[node] - self.sim.required_radius[self.success_dev]))
 
         D_new = self._geo(self.success_dev)
         success = bool(D_new <= self.cfg.success_threshold_mm)
@@ -237,6 +249,11 @@ class VesselNavEnv(gym.Env):
             "path_length_mm_microcatheter": float(ep["path_length_mm"][CATH]),
             "tip_speed_mean_mm_s": float(np.mean(ep["tip_speeds"])) if ep["tip_speeds"] else 0.0,
             "tip_speed_max_mm_s": float(np.max(ep["tip_speeds"])) if ep["tip_speeds"] else 0.0,
+            "tip_acceleration_max_mm_s2": float(max(ep["tip_accelerations"], default=0.0)),
+            "min_lumen_clearance_mm": float(min(ep["lumen_clearance_mm"], default=np.nan)),
+            "branch_selection_accuracy_pct": float(100.0 * ep["correct_branch_decisions"] / ep["branch_decisions"] if ep["branch_decisions"] else 100.0),
+            "route_efficiency_pct": float(100.0 * self.plan.length_mm / max(float(ep["path_length_mm"][self.success_dev]), 1e-9) if self.plan is not None and self.plan.length_mm else np.nan),
+            "failure_mode": "success" if success else ("wrong_branch" if ep["wrong_branch_events"] else "timeout"),
             "initial_distance_mm": float(self.D0),
             "final_distance_mm": float(self.D),
             "min_distance_mm": float(self.D_min),
