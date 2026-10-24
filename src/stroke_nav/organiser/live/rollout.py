@@ -134,10 +134,15 @@ def run_lockstep_episode(env, policy, seed: int, sigma: float = 0.0, rng: np.ran
         if guard is not None and env.bridge.true["guidewire"]:
             from stroke_nav.safety.wall import guidewire_bodies
 
-            s = env.bridge.true["guidewire"][-1]
-            check = guard.check(guidewire_bodies(s), float(s["ins"]) * 1000.0)
-            cross_steps += int(check.crossing)
-            depth = max(depth, check.depth_mm)
+            crossed = False
+            for dev in ("guidewire", "catheter"):  # the catheter's bodies are 16 mm apart: it can cross walls too
+                s = env.bridge.true[dev][-1] if env.bridge.true[dev] else None
+                if s is None or (dev == "catheter" and s["ins"] * 1000.0 < 2.0):
+                    continue
+                check = guard.check(guidewire_bodies(s), float(s["ins"]) * 1000.0)
+                crossed |= check.crossing
+                depth = max(depth, check.depth_mm)
+            cross_steps += int(crossed)
         true = env.bridge.latest_true()
         tips.append(np.asarray(true.tip_position, float))
         peak = max(peak, float(true.peak_force))

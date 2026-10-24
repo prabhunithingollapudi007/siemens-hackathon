@@ -48,6 +48,8 @@ their physics view on the left and the policy's fluoro input on the right (`resu
 | A\* + trajectory follower, catheter to right M1 past an 85 % ICA stenosis | our simulator | 20/20 in 26.5 s (plain shortest path 0/20) |
 | Safety monitor on an imperfect policy | synthetic arch, stressed tracking | success 60 → 100 %, target overshoot 40 → 0 % |
 
+**Challenge day:** [docs/CHALLENGE.md](docs/CHALLENGE.md) is the step-by-step checklist from a new mesh and target to checked candidates.
+
 ### Demo commands
 
 ```bash

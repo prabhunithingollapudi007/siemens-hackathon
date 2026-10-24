@@ -142,15 +142,17 @@ def main() -> None:
     ap.add_argument("--resume", action="store_true",
                     help="reuse candidates/<method>.json and demos/ already in the case folder instead of rerunning them")
     ap.add_argument("--no-plot", action="store_true")
+    ap.add_argument("--cath-lead", type=float, default=25.0, help="roll_cath: the catheter follows this far behind the wire tip (mm)")
+    ap.add_argument("--cath-park", type=float, default=200.0, help="roll_cath: the catheter stops at this insertion (mm)")
     ap.add_argument("--no-wall-safety", action="store_true",
                     help="run their-physics methods without the wall safety layer (stroke_nav.safety.wall.WallSafeController)")
     args = ap.parse_args()
 
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
-    unknown = set(methods) - {"astar", "astar_theirs", "roll", "bc", "act", "sac"}
+    unknown = set(methods) - {"astar", "astar_theirs", "roll", "roll_cath", "bc", "act", "sac"}
     if unknown:
         ap.error(f"unknown methods {sorted(unknown)}")
-    needs_theirs = bool(set(methods) & {"astar_theirs", "roll", "bc", "act", "sac"})
+    needs_theirs = bool(set(methods) & {"astar_theirs", "roll", "roll_cath", "bc", "act", "sac"})
     case_id = args.case_id or args.target.replace("@", "-at-").replace(":", "-").replace(",", "_")
     case_dir = Path(args.out_root) / case_id
     (case_dir / "candidates").mkdir(parents=True, exist_ok=True)
@@ -282,9 +284,9 @@ def main() -> None:
                          notes=["their rod picks branches differently from our tip model; re-steering at bifurcations is unreliable there"]))
 
     # ------------------------------------------------------------------ entry-roll controller
-    if roll is None and set(methods) & {"roll", "bc", "act", "sac"}:
-        log("no entry roll (no table and no --roll): skipping roll, bc, act and sac")
-        methods = [m for m in methods if m not in {"roll", "bc", "act", "sac"}]
+    if roll is None and set(methods) & {"roll", "roll_cath", "bc", "act", "sac"}:
+        log("no entry roll (no table and no --roll): skipping roll, roll_cath, bc, act and sac")
+        methods = [m for m in methods if m not in {"roll", "roll_cath", "bc", "act", "sac"}]
     if "roll" in methods and not done("roll"):
         t0 = time.monotonic()
         res = lockstep_pool([{"seed": s} for s in seeds], lambda w: safe(EntryRollExpert(roll_deg=roll, slow_radius_mm=args.slow_radius)),
@@ -295,6 +297,19 @@ def main() -> None:
         if miss is not None:
             c.notes.append(f"calibrated paths miss the target by {miss:.1f} mm")
         finish(c)
+
+    if "roll_cath" in methods and not done("roll_cath"):
+        from stroke_nav.agents.catheter_support import CatheterSupportedRoll
+
+        t0 = time.monotonic()
+        res = lockstep_pool([{"seed": s} for s in seeds],
+                            lambda w: safe(CatheterSupportedRoll(EntryRollExpert(roll_deg=roll, slow_radius_mm=args.slow_radius),
+                                                                 lead_mm=args.cath_lead, park_mm=args.cath_park)),
+                            args.workers, args.max_steps, goal_m, tag="roll_cath", **env_kwargs)
+        finish(Candidate("roll_cath", "theirs-lockstep",
+                         f"entry roll {roll:g} deg, catheter {args.cath_lead:g} mm behind the wire tip as support, parked at {args.cath_park:g} mm",
+                         plan_wall_s=time.monotonic() - t0, episodes=[r[1] for r in res],
+                         notes=["catheter-supported: keeps the unsupported wire short through the arch (docs/SAFETY.md §7)"]))
 
     # ------------------------------------------------------------------ demonstrations, BC, ACT, SAC
     demos_dir, demo_meta, demo_s = case_dir / "demos", case_dir / "demos" / "meta.json", 0.0

@@ -1,0 +1,9 @@
+{
+  "schema": "stroke-nav/robot/1",
+  "name": "fine-rod",
+  "description": "Experiment, not a device: the organiser's robot and devices with both rods shortened to 0.6 m so their page resolves them finer (wire 160 bodies: 3.75 mm apart instead of 7.5 mm; catheter 80 bodies: 7.5 mm instead of 16 mm). Tests whether wall crossings come from the rod resolution (docs/SAFETY.md \u00a77). Travel as the Monadnock; 0.6 m covers its 264.5 mm of insertion.",
+  "guidewire_travel_mm": 264.5,
+  "catheter_lead_max_mm": 229.2,
+  "guidewire_lag_mm": 5.0,
+  "catheter_lag_mm": 1.5
+}

@@ -1,0 +1,9 @@
+{
+  "schema": "stroke-nav/robot/1",
+  "name": "long-reach-fine",
+  "description": "long-reach (750 mm guidewire travel) with both rods shortened so their page resolves them finer: wire 0.85 m / 160 bodies (5.3 mm apart), catheter 0.75 m / 80 bodies (9.4 mm apart). Coarser rods slipped through the arch wall (docs/SAFETY.md \u00a77). Not the organiser's robot.",
+  "guidewire_travel_mm": 750.0,
+  "catheter_lead_max_mm": 229.2,
+  "guidewire_lag_mm": 5.0,
+  "catheter_lag_mm": 1.5
+}

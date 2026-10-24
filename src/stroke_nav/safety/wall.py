@@ -59,6 +59,7 @@ class WallCheck:
     where_world_m: list | None  # deepest point
     inserted_bodies: int
     kind: str = ""  # "shortcut" (into another lumen through the wall) or "deep" (beyond ``depth_mm``)
+    device: str = "guidewire"
 
 
 class WallGuard:
@@ -168,6 +169,8 @@ def guidewire_bodies(sample: dict) -> np.ndarray:
 
 
 GW_INSERTION, GW_SIN, GW_COS = 17, 18, 19  # organiser state indices (openng3_rl.observation)
+CATH_INSERTION = 28  # catheter insertion (m) in the catheter aux block
+GOAL_DELTA = slice(36, 39)  # goal minus noisy guidewire tip (m)
 RAD_PER_STEP = 0.2  # guidewire rotation per 5 Hz step at |w| = 1
 
 
@@ -184,7 +187,9 @@ class WallSafeController:
       and ``retract_mm`` behind where the crossing was seen
     * ``reroll``: turn the guidewire by the next offset in ``reroll_deg`` from the roll at the crossing
     * ``advance``: the policy's push, capped at ``creep``, with the roll held at the new angle; a new crossing
-      starts the next retry
+      starts the next retry, and so does a retry that stops getting closer: once the tip-to-goal distance grows
+      ``progress_mm`` past its best, the new roll has picked another vessel, and the layer backs off to
+      ``retract_mm`` before the insertion of that best point (out of that vessel) and tries the next roll
     * ``abort``: after the last retry, retract and hold (handed to the operator); ``events`` records why
 
     ``bind(env)`` gives it the lockstep env, whose ``bridge.noisy`` holds the device states their sensor
@@ -192,8 +197,9 @@ class WallSafeController:
     """
 
     def __init__(self, policy, guard: WallGuard, retract_mm: float = 15.0, retract_speed: float = 0.5,
-                 reroll_deg: tuple[float, ...] = (20.0, -20.0, 40.0, -40.0), creep: float = 0.3, roll_tol_deg: float = 3.0):
-        self.policy, self.guard = policy, guard
+                 reroll_deg: tuple[float, ...] = (20.0, -20.0, 40.0, -40.0), creep: float = 0.3, roll_tol_deg: float = 3.0,
+                 progress_mm: float = 6.0):
+        self.policy, self.guard, self.progress_mm = policy, guard, float(progress_mm)
         self.retract_mm, self.retract_speed, self.creep = retract_mm, retract_speed, creep
         self.reroll_deg, self.roll_tol = tuple(reroll_deg), np.radians(roll_tol_deg)
         self.env = None
@@ -206,6 +212,7 @@ class WallSafeController:
         self.mode, self.retry, self.events = "pass", 0, []
         self.rot, self.last_raw = 0.0, None
         self.retract_to = self.roll_at_cross = self.target_rot = 0.0
+        self.best_mm, self.ins_at_best = np.inf, 0.0
 
     def _rotation(self, s: np.ndarray) -> float:
         raw = float(np.arctan2(s[GW_SIN], s[GW_COS]))
@@ -213,18 +220,39 @@ class WallSafeController:
         self.last_raw = raw
         return self.rot
 
-    def _bodies(self) -> np.ndarray:
-        noisy = self.env.bridge.noisy["guidewire"] if self.env is not None else []
+    def _bodies(self, device: str = "guidewire") -> np.ndarray:
+        noisy = self.env.bridge.noisy[device] if self.env is not None else []
         return guidewire_bodies(noisy[-1]) if noisy else np.zeros((0, 3))
+
+    def _check(self, ins_mm: float, cath_mm: float):
+        """The guidewire and, once inserted, the catheter (its bodies are 16 mm apart: it can cross walls too)."""
+        check = self.guard.check(self._bodies("guidewire"), ins_mm)
+        check.device = "guidewire"
+        if not check.crossing and cath_mm > 2.0:
+            c = self.guard.check(self._bodies("catheter"), cath_mm)
+            if c.crossing:
+                c.device = "catheter"
+                return c
+        return check
 
     def act(self, obs: dict) -> np.ndarray:
         s = np.asarray(obs["state"], np.float64)
         ins_mm, rot = float(s[GW_INSERTION]) * 1000.0, self._rotation(s)
+        cath_mm = float(s[CATH_INSERTION]) * 1000.0
         proposed = np.asarray(self.policy.act(obs), np.float32)  # keep the policy's own state current
-        check = self.guard.check(self._bodies(), ins_mm)
+        check = self._check(ins_mm, cath_mm)
+        dist_mm = float(np.linalg.norm(s[GOAL_DELTA])) * 1000.0
+        if self.mode == "advance" and not check.crossing:
+            if dist_mm < self.best_mm:
+                self.best_mm, self.ins_at_best = dist_mm, ins_mm
+            elif dist_mm > self.best_mm + self.progress_mm:  # this roll picked another vessel: back out of it, next roll
+                self.events.append({"event": "no_progress", "retry": self.retry, "ins_mm": round(ins_mm, 1),
+                                    "dist_mm": round(dist_mm, 1), "best_mm": round(self.best_mm, 1)})
+                self.mode, self.retract_to = "retract", self.ins_at_best - self.retract_mm
         if check.crossing and self.mode in ("pass", "advance"):
-            self.events.append({"event": "wall_crossing", "mode": self.mode, "retry": self.retry, "ins_mm": round(ins_mm, 1),
-                                "depth_mm": check.depth_mm, "where_world_m": check.where_world_m})
+            self.events.append({"event": "wall_crossing", "device": check.device, "mode": self.mode, "retry": self.retry,
+                                "ins_mm": round(ins_mm, 1), "cath_mm": round(cath_mm, 1), "depth_mm": check.depth_mm,
+                                "where_world_m": check.where_world_m})
             self.mode, self.retract_to = "retract", ins_mm - self.retract_mm
             if self.retry == 0:
                 self.roll_at_cross = rot
@@ -232,21 +260,20 @@ class WallSafeController:
             return proposed
         a = np.zeros(4, np.float32)
         if self.mode in ("retract", "abort"):
-            if check.crossing:
-                a[0] = -1.0  # still across the wall: out at full speed
-                return a
-            if ins_mm > self.retract_to:
-                a[0] = -self.retract_speed
+            if check.crossing or ins_mm > self.retract_to:
+                a[0] = -1.0 if check.crossing else -self.retract_speed  # still across the wall: out at full speed
+                if cath_mm > 2.0:
+                    a[2] = a[0]  # the catheter backs off with the wire
                 return a
             if self.mode == "abort":
                 return a  # clear of the wall and backed off: hold for the operator
             if self.retry >= len(self.reroll_deg):
                 self.mode = "abort"
-                self.events.append({"event": "abort", "reason": "every retry crossed the wall", "ins_mm": round(ins_mm, 1)})
+                self.events.append({"event": "abort", "reason": "every retry crossed the wall or went into another vessel", "ins_mm": round(ins_mm, 1)})
                 return a
             self.target_rot = self.roll_at_cross + np.radians(self.reroll_deg[self.retry])
             self.retry += 1
-            self.mode = "reroll"
+            self.mode, self.best_mm = "reroll", np.inf
             self.events.append({"event": "reroll", "retry": self.retry, "roll_deg": round(float(np.degrees(self.target_rot)), 1)})
         err = self.target_rot - rot
         if self.mode == "reroll":
@@ -254,7 +281,8 @@ class WallSafeController:
                 a[1] = np.clip(err / RAD_PER_STEP, -1.0, 1.0)
                 return a
             self.mode = "advance"
-        # advance: the policy's push, slower, with the roll held at the new angle
+        # advance: the policy's push (and catheter), slower, with the roll held at the new angle
         a[0] = min(float(proposed[0]), self.creep)
         a[1] = np.clip(err / RAD_PER_STEP, -0.5, 0.5)
+        a[2] = min(float(proposed[2]), self.creep)
         return a

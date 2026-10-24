@@ -62,14 +62,15 @@ def compose(physics_jpeg: bytes, fluoro_jpeg: bytes | None, lines: list[str], ba
         right.paste(Image.open(io.BytesIO(fluoro_jpeg)).convert("RGB").resize((side, side)), (0, 0))
     d = ImageDraw.Draw(right)
     d.text((12, side + 10), "policy input: noisy fluoro (their viewer)", fill=(150, 150, 160), font=_font(16))
+    step, size = (30, 20) if len(lines) <= 7 else (22, 16)  # the panel under the fluoro image is 260 px high
     for i, line in enumerate(lines):
-        d.text((12, side + 44 + 30 * i), line, fill=(235, 235, 240), font=_font(20))
+        d.text((12, side + 40 + step * i), line, fill=(235, 235, 240), font=_font(size))
     frame = Image.new("RGB", (left.width + side + (left.width + side) % 2, HEIGHT))
     frame.paste(left, (0, 0))
     frame.paste(right, (left.width, 0))
     if banner:
         dd = ImageDraw.Draw(frame)
-        dd.rectangle((0, 0, left.width, 52), fill=(20, 110, 60))
+        dd.rectangle((0, 0, left.width, 52), fill=(170, 95, 10) if banner.startswith("SAFE STOP") else (20, 110, 60))
         dd.text((16, 12), banner, fill=(255, 255, 255), font=_font(26))
     return np.asarray(frame)
 
@@ -91,6 +92,8 @@ def main() -> None:
     ap.add_argument("--max-steps", type=int, default=None)
     ap.add_argument("--vmr-model", default="0248_H_AOCERE_CAS", help="VMR model of --target (other models: their scenario from make_scenario.py)")
     ap.add_argument("--table", default=None, help="entry-roll sweep file(s) (default: the model's)")
+    ap.add_argument("--wall-safety", action="store_true",
+                    help="wrap the controller in the wall safety layer (stroke_nav.safety.wall): back off, re-roll, stop safely")
     args = ap.parse_args()
 
     env_kwargs, route_line = {}, None
@@ -148,6 +151,23 @@ def main() -> None:
         from stable_baselines3 import SAC
 
         model, name = SAC.load(args.model, device="cpu"), f"BC policy {Path(args.model).parent.name}"
+    controller = policy if args.expert else None
+    guard = None
+    if args.wall_safety:
+        from stroke_nav.organiser.live.rollout import wall_guard_for
+        from stroke_nav.safety.wall import WallSafeController
+
+        class _Model:  # the SB3 model as a controller
+            def reset(self):
+                pass
+
+            def act(self, o):
+                return model.predict(o, deterministic=True)[0]
+
+        sc = (env_kwargs.get("scenario_name", "cas-reference"), env_kwargs.get("scenario_root"))
+        controller = WallSafeController(controller if args.expert else _Model(), wall_guard_for(*sc))
+        guard = wall_guard_for(*sc)  # the true wire, for the overlay
+        name += " + wall safety layer"
     their_goal = bool(goal and goal.get("scenario_goal"))
     env = make_env(worker=0, seed=args.seed, visible=not args.headless, goals=None if (goal is None or their_goal) else [goal["goal_m"]],
                    max_steps=args.max_steps, **env_kwargs)
@@ -159,26 +179,43 @@ def main() -> None:
         elif goal:
             print(f"goal: the organiser's cas-reference goal ({goal['branch']}), entry roll {goal['roll_deg']:g} deg")
             print(f"goal {goal['id']} ({goal['split']}): {goal['branch']}, entry roll {goal['roll_deg']:g} deg")
+        if controller is not None and hasattr(controller, "bind"):
+            controller.bind(env)
         obs, info = env.reset(seed=args.seed)
-        if args.expert:
-            policy.reset()
-        done, step, banner = False, 0, None
+        if controller is not None:
+            controller.reset()
+        done, step, banner, held, worst = False, 0, None, 0, 0.0
         while not done:
-            act = policy.act(obs) if args.expert else model.predict(obs, deterministic=True)[0]
+            act = controller.act(obs) if controller is not None else model.predict(obs, deterministic=True)[0]
             obs, _, term, trunc, info = env.step(np.asarray(act, np.float32))
             step += 1
             done = term or trunc
+            safety_line = None
+            if args.wall_safety:
+                from stroke_nav.safety.wall import guidewire_bodies
+
+                checks = [guard.check(guidewire_bodies(bridge.true[d][-1]), bridge.true[d][-1]["ins"] * 1000.0)
+                          for d in ("guidewire", "catheter") if bridge.true[d] and bridge.true[d][-1]["ins"] * 1000.0 > 2.0]
+                depth = max([c.depth_mm for c in checks if c.crossing], default=0.0)
+                worst = max(worst, depth)
+                safety_line = [f"wall safety: {controller.mode}, retry {controller.retry}/{len(controller.reroll_deg)}",
+                               f"true wire beyond the wall {depth:.1f} mm (worst {worst:.1f})"]
+                held = held + 1 if controller.mode == "abort" and not np.any(act) else 0
+                if held >= 15:  # backed off and held for 3 s: the operator takes over
+                    done = True
             dist = info["eval/true_distance_m"] * 1000
             ins, rot = obs["state"][17] * 1000, np.degrees(np.arctan2(obs["state"][18], obs["state"][19]))
             if done:
                 banner = (f"GOAL REACHED in {step / 5:.1f} s  ({dist:.1f} mm, within 5 mm for 3 steps)" if info["success"]
+                          else f"SAFE STOP at {ins:.0f} mm: wall crossing ahead, backed off"
+                          if args.wall_safety and controller.mode == "abort"
                           else f"episode ended: {info.get('reset_reason')}  ({dist:.1f} mm)")
             target = (f"{args.variant or args.vmr_model.split('_')[0]}: {'organiser cas-reference goal' if their_goal else args.target} ({goal['branch']}), entry roll {goal['roll_deg']:g} deg" if args.target or args.variant
                       else f"goal {goal['id']} ({goal['split']}): {goal['branch']}" if goal else "goal: cas-reference")
             lines = [name, target, *([route_line] if route_line else []), f"step {step:3d}   simulated {step / 5:5.1f} s", f"distance to goal {dist:6.1f} mm",
                      f"guidewire  in {ins:6.1f} mm  roll {rot:6.1f} deg",
                      f"action  v {act[0]:+.2f}  w {act[1]:+.2f}  (catheter {act[2]:+.2f})",
-                     f"peak force {bridge.latest_true().peak_force:.3f} N"]
+                     f"peak force {bridge.latest_true().peak_force:.3f} N", *(safety_line or [])]
             if args.record:
                 frames.append(compose(bridge.physics.screenshot(), bridge.last_viewer_jpeg, lines, banner))
             if step % 10 == 0 or done:

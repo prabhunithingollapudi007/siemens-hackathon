@@ -101,3 +101,29 @@ def test_safety_layer_never_pushes_harder_than_the_policy():
         a = ctl.act(obs(ins, 0.0))
         assert a[0] <= max(pol.last[0], 0.0) + 1e-6 or a[0] < 0  # only the policy's push or less, or a back-off
         ins = max(0.0, ins + 2.0 * float(a[0]))
+
+
+def test_retry_that_stops_getting_closer_backs_out_and_tries_the_next_roll():
+    guard = StubGuard()
+    ctl = WallSafeController(Push(), guard, retract_mm=10.0, reroll_deg=(20.0, -20.0), progress_mm=6.0)
+    ctl.reset()
+
+    def o(ins, rot_deg, dist_mm):
+        x = obs(ins, np.radians(rot_deg))
+        x["state"][36] = dist_mm / 1000.0  # goal minus tip (m)
+        return x
+
+    guard.crossing = True
+    ctl.act(o(100, 0, 30))  # crossing: back off
+    guard.crossing = False
+    ctl.act(o(89, 0, 40))  # backed off 10 mm: turn to the first offset
+    ctl.act(o(89, 20, 40))
+    assert ctl.mode == "advance"
+    for ins, dist in ((92, 30), (95, 20), (98, 12), (101, 15), (104, 17)):  # closest at 98 mm, then drifting off
+        assert ctl.act(o(ins, 20, dist))[0] > 0
+    a = ctl.act(o(107, 20, 19))  # 7 mm past its best: another vessel
+    assert ctl.mode == "retract" and a[0] < 0 and abs(ctl.retract_to - (98 - 10)) < 1e-3
+    ctl.act(o(95, 20, 25))  # still in the other vessel: keep backing out
+    assert ctl.mode == "retract"
+    ctl.act(o(87, 20, 40))  # out: next roll
+    assert ctl.mode == "reroll" and [e["event"] for e in ctl.events] == ["wall_crossing", "reroll", "no_progress", "reroll"]

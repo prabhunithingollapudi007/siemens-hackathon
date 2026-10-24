@@ -31,7 +31,7 @@ import numpy as np
 from stroke_nav.agents.roll_table import path_distance_m
 from stroke_nav.safety.monitor import SafetyConfig
 
-METHOD_ORDER = ("astar", "astar_theirs", "roll", "bc", "act", "sac")
+METHOD_ORDER = ("astar", "astar_theirs", "roll", "roll_cath", "bc", "act", "sac")
 # flags that are reported but do not turn a candidate's verdict into "review": the expert pushes at full
 # speed in every vessel, so the speed envelope (a placeholder threshold) fires on every physics candidate
 ADVISORY_FLAGS = {"speed"}
@@ -311,7 +311,7 @@ def plot_candidates(path: str | Path, anat, frame, cands: list[Candidate], goal_
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    colors = {"astar": "#2563eb", "astar_theirs": "#0891b2", "roll": "#d97706", "bc": "#dc2626", "act": "#7c3aed", "sac": "#059669"}
+    colors = {"astar": "#2563eb", "astar_theirs": "#0891b2", "roll": "#d97706", "roll_cath": "#92400e", "bc": "#dc2626", "act": "#7c3aed", "sac": "#059669"}
     fig, axes = plt.subplots(1, 2, figsize=(14, 8))
     for name in anat.branch_names:
         p = anat.nodes[anat.branch_nodes(name)]

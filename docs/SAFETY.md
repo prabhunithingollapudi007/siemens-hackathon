@@ -166,6 +166,21 @@ target instead of reaching it through the wall:
 the catheter behind the wire through the arch for support, or selective cannulation with the shaped
 catheter tip, not only the entry roll.
 
+### Getting past the crossings: trials (2026-10-24, one episode each)
+
+| Trial | Result |
+|---|---|
+| catheter support (`plan_case.py --methods roll_cath`: catheter 25 mm behind the wire tip), cas-reference, standard rods | worse: the catheter itself (bodies 16 mm apart) crossed the arch wall, up to 4.7 mm; aborted |
+| finer rods (`STROKE_NAV_ROBOT=fine-rod`: wire 3.75 mm, catheter 7.5 mm between bodies), cas-reference, wire only | crossings 35 -> 10 steps, 3.6 -> 2.0 mm; the left-subclavian ones vanish, one spot left (arch roof at the left CCA origin) |
+| fine rods + catheter support, cas-reference | 1 crossing step (1.3 mm), but the stiff supported tip slides past the brachiocephalic into the ascending aorta: misses the branch |
+| 0028 femoral entry to the left CCA, catheter support, `long-reach` / `long-reach-fine` rods | ends in the left subclavian; the catheter crosses the arch wall at ~600 mm inserted |
+| 0028 **mid-aorta entry** (`scripts/loop_hook.py`, scenario `0028_H_ABAO_H-arch`), catheter support at 125-145 deg | **reached** the left CCA (2.5-2.8 mm, 19 s) with a brief 3-step crossing (~2 mm) as the tip slips into the opening; catheter 10-15 mm behind sends the wire into the left subclavian |
+| loop-and-hook (push past the branches into the ascending aorta, turn back, pull into the branch) | no controller got past the arch branches (20 sweeps, deepest 76-89 mm from the root, branches at 67-95 mm) |
+| BC of the mid-entry catheter support (8 successful demos) | 0/3: two seeds into the left subclavian, one **looped through the ascending aorta** back to the left CCA but overshot (13 mm) with 187 crossing steps |
+
+Two causes: the page's rod resolution (finer rods remove most crossings) and an unsupported wire bowing at the
+arch; the branch choice at the left CCA opening is very sensitive (action noise of 0.2 flips it in 4 of 6 runs).
+
 ## 8. Device removal (2026-10-23)
 
 A procedure ends with the devices coming out. `stroke_nav.agents.removal.WithdrawalController` withdraws

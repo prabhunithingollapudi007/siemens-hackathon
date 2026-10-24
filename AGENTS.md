@@ -6,6 +6,7 @@ and user-facing commands, see [README.md](README.md). For the organiser's system
 [docs/HANDOVER.md](docs/HANDOVER.md); for the safety layer, [docs/SAFETY.md](docs/SAFETY.md); for the TinyGPU cluster, [docs/HPC.md](docs/HPC.md);
 for per-patient, per-target planning with several methods under time budgets, [docs/CASE_PLANNING.md](docs/CASE_PLANNING.md);
 for the A\* cost terms, route evaluation, local replan and running on the organiser's physics with other meshes, [docs/PLANNER.md](docs/PLANNER.md).
+On challenge day (a new mesh and target), follow [docs/CHALLENGE.md](docs/CHALLENGE.md).
 
 ## What this repo is
 
@@ -32,7 +33,7 @@ patient vessel models from the Vascular Model Repository (VMR). It contains:
 | `compat/openng3_rl/` | stand-in for the organiser's `openng3_rl.policy.FluoroStateExtractor` (see invariants) |
 | `scripts/` | command-line entry points (fetch, plot, playground, plan, evaluate, compare, train, check, export, `measure_gap`, `run_astar`) |
 | `device-parameters.json` | the physics page's device settings (organiser schema); `run_astar.py` reads it by default |
-| `robots/<name>/` | robot profiles: `device-parameters.json` (organiser schema, within their page's slider ranges) + `robot.json` (travel limits, `stroke-nav/robot/1`); `STROKE_NAV_ROBOT=<name>` selects one (`long-reach`: 750 mm guidewire travel for femoral access) |
+| `robots/<name>/` | robot profiles (`long-reach`, `long-reach-fine`, `fine-rod`): `device-parameters.json` (organiser schema, within their page's slider ranges) + `robot.json` (travel limits, `stroke-nav/robot/1`); `STROKE_NAV_ROBOT=<name>` selects one (`long-reach`: 750 mm guidewire travel for femoral access) |
 | `tests/` | pytest suite, mostly on synthetic vessel trees |
 | `docs/` | organiser reference and hand-over guide |
 | `tools/` | `organiser_stack.ps1`: start, stop and check the organiser's own stack locally (Docker Desktop); see docs/ORGANISER_SETUP.md §11 |
@@ -66,6 +67,7 @@ py -3.12 -m venv --system-site-packages .venv
 .venv\Scripts\python.exe scripts/export_deployment.py --case results/cases/v70-left                  # A* + roll and BC of a case, for their ./sys -> handover/stroke-nav-v70-left (docs/HANDOVER.md)
 .venv\Scripts\python.exe scripts/check_deployment.py --bundle handover/stroke-nav-v70-left --episodes 1      # bundle through their evaluator on their physics (lockstep)
 .venv\Scripts\python.exe scripts/removal_trials.py --target scenario --roll 120 --insert-to 120   # withdrawal strategies on their physics with the wall guard (docs/SAFETY.md §8)
+.venv\Scripts\python.exe scripts/loop_hook.py sweep --cath   # arch trials from a mid-aorta entry on 0028 (scenario 0028_H_ABAO_H-arch): roll sweeps, catheter support, loop-and-hook (docs/SAFETY.md §7)
 .venv\Scripts\python.exe scripts/run_astar.py --target right_carotid@40 --sim ours          # closed-loop A* (--sim theirs: live stack)
 .venv\Scripts\python.exe scripts/demo_astar.py                                         # 3D demo of A* with the organiser devices (--record x.gif)
 .venv\Scripts\python.exe scripts/measure_gap.py                                        # ours vs their physics (live stack needed)
